@@ -1,0 +1,17 @@
+{
+  "fallback_key": "fallback",
+  "route_rules": {
+    "coding": ["python", "code", "bug"],
+    "math": ["calculate", "math", "sum"],
+    "writing": ["essay", "write", "draft"],
+    "research": ["research", "investigate"],
+    "direct_answer": ["define", "explain"]
+  },
+  "route_agents": {
+    "coding": "coder",
+    "writing": "writer"
+  },
+  "route_workflows": {
+    "research": ["researcher", "writer"]
+  }
+}

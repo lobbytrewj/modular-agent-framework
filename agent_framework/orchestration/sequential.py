@@ -1,10 +1,36 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Optional, Sequence
 
-from agent_framework.agents.base import BaseAgent
+from agent_framework.agents import BaseAgent, LLMAgent, MockAgent
+from agent_framework.core.llm import LLMClient
 from agent_framework.core.tasks import RunResult, Task
 from agent_framework.orchestration.registry import AgentRegistry
+
+# The three fields BaseAgent's constructor takes
+AGENT_PARAMS = ("name", "role", "system_prompt")
+
+# Local model settings a config entry may carry, forwarded to LLMClient.
+LLM_PARAMS = ("model", "temperature", "max_tokens", "device", "dtype")
+
+# Clients are stateless between calls, so agents whose settings match can share
+# one rather than constructing a duplicate.
+_CLIENT_CACHE: dict[tuple, LLMClient] = {}
+
+
+def build_llm_client(entry: dict) -> LLMClient:
+    """Build (or reuse) the LLMClient for one agent from its config entry.
+
+    Any of LLM_PARAMS the entry omits falls back to the LLMClient default.
+    """
+    settings = {param: entry[param] for param in LLM_PARAMS if param in entry}
+
+    cache_key = tuple(sorted(settings.items()))
+    if cache_key not in _CLIENT_CACHE:
+        _CLIENT_CACHE[cache_key] = LLMClient(**settings)
+    return _CLIENT_CACHE[cache_key]
 
 
 # Runs a fixed lineup of agents one after another
@@ -87,3 +113,76 @@ class SequentialOrchestrator:
         # in __init__), so the loop always executes at least one iteration.
         assert result is not None
         return result
+
+
+def load_agent_config(config_path: str) -> dict[str, dict]:
+    """Read the JSON agent config and hand back a key -> params mapping.
+
+    Shared by every orchestration factory (see also router.py), so all of them
+    read the same file format:
+
+        {
+          "researcher": {
+            "name": "ResearchAgent",
+            "role": "research",
+            "system_prompt": "Gather raw findings on the given topic."
+          },
+          ...
+        }
+    """
+    path = Path(config_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Agent config file not found: {config_path}")
+
+    with path.open(encoding="utf-8") as config_file:
+        config = json.load(config_file)
+
+    if not isinstance(config, dict):
+        raise ValueError(
+            f"Agent config {config_path} must be a JSON object mapping "
+            f"agent keys to parameter objects, got {type(config).__name__}"
+        )
+    return config
+
+
+def create_sequential_pipeline(
+    config_path: str, agent_keys: list[str]
+) -> SequentialOrchestrator:
+    """Reads the agent definitions off disk, instantiates an LLMAgent per key
+    in the order given by `agent_keys`, and wires them into an orchestrator.
+    """
+    if not agent_keys:
+        raise ValueError("create_sequential_pipeline requires at least one agent key")
+
+    config = load_agent_config(config_path)
+
+    registry = AgentRegistry()
+    agent_kwargs: dict[str, dict] = {}
+
+    for key in agent_keys:
+        if key not in config:
+            raise KeyError(f"No agent configured under key '{key}' in {config_path}")
+
+        entry = config[key]
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"Config entry for '{key}' in {config_path} must be an object, "
+                f"got {type(entry).__name__}"
+            )
+
+        # Previous behaviour, kept for reference:
+        # registry.register(key, MockAgent)
+        # agent_kwargs[key] = {k: entry[k] for k in AGENT_PARAMS if k in entry}
+
+        # Real LLM-backed agents. Each gets its own client so per-agent model
+        # settings (model, temperature, max_tokens) in the config are honoured.
+        registry.register(key, LLMAgent)
+        kwargs = {k: entry[k] for k in AGENT_PARAMS if k in entry}
+        kwargs["llm_client"] = build_llm_client(entry)
+        agent_kwargs[key] = kwargs
+
+    return SequentialOrchestrator.from_registry(
+        agent_names=agent_keys,
+        registry=registry,
+        agent_kwargs=agent_kwargs,
+    )

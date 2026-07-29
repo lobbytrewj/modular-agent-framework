@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Callable, Optional, Protocol, Union, runtime_checkable
 
-from agent_framework.agents.base import BaseAgent
+from agent_framework.agents import BaseAgent, LLMAgent, MockAgent
 from agent_framework.core.tasks import RunResult, Task
+from agent_framework.orchestration.sequential import (
+    AGENT_PARAMS,
+    build_llm_client,
+    create_sequential_pipeline,
+    load_agent_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -153,3 +161,127 @@ class RouterOrchestrator:
         )
 
         return self._execute(destination, task)
+
+
+DEFAULT_AGENTS_CONFIG = "config/agents.json"
+DEFAULT_ROUTER_CONFIG = "config/router_config.json"
+
+
+def load_router_config(router_config_path: str) -> dict:
+    """Read router_config.json and hand back its four sections.
+
+    Expected shape:
+
+        {
+          "fallback_key": "fallback",
+          "route_rules":     {"coding": ["python", "code", "bug"], ...},
+          "route_agents":    {"coding": "coder", ...},
+          "route_workflows": {"research": ["researcher", "writer"], ...}
+        }
+    """
+    path = Path(router_config_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Router config file not found: {router_config_path}")
+
+    with path.open(encoding="utf-8") as config_file:
+        config = json.load(config_file)
+
+    if not isinstance(config, dict):
+        raise ValueError(
+            f"Router config {router_config_path} must be a JSON object, "
+            f"got {type(config).__name__}"
+        )
+
+    for section in ("route_rules", "route_agents", "route_workflows"):
+        value = config.setdefault(section, {})
+        if not isinstance(value, dict):
+            raise ValueError(
+                f"'{section}' in {router_config_path} must be an object, "
+                f"got {type(value).__name__}"
+            )
+
+    fallback_key = config.setdefault("fallback_key", "fallback")
+    if not isinstance(fallback_key, str):
+        raise ValueError(
+            f"'fallback_key' in {router_config_path} must be a string, "
+            f"got {type(fallback_key).__name__}"
+        )
+
+    return config
+
+
+def _build_agent(config: dict[str, dict], key: str, config_path: str) -> BaseAgent:
+    """Instantiate a single LLMAgent from its config entry."""
+    if key not in config:
+        raise KeyError(f"No agent configured under key '{key}' in {config_path}")
+
+    entry = config[key]
+    if not isinstance(entry, dict):
+        raise ValueError(
+            f"Config entry for '{key}' in {config_path} must be an object, "
+            f"got {type(entry).__name__}"
+        )
+
+    kwargs = {param: entry[param] for param in AGENT_PARAMS if param in entry}
+    kwargs.setdefault("name", key)
+    kwargs.setdefault("role", key)
+    kwargs.setdefault("system_prompt", f"You are the '{key}' destination of a router.")
+
+    # Previous behaviour, kept for reference: a mock agent that echoes the
+    # task back and never touches the network.
+    # return MockAgent(**kwargs)
+
+    # Real LLM-backed agent. It gets its own client so per-agent model settings
+    # (model, temperature, max_tokens) in the config are honoured.
+    return LLMAgent(**kwargs, llm_client=build_llm_client(entry))
+
+
+def _resolve_destination(
+    route_key: str,
+    agents_config: dict[str, dict],
+    agents_config_path: str,
+    route_workflows: dict[str, list[str]],
+    route_agents: dict[str, str],
+) -> Destination:
+    """Work out what a route key points at: a sub-workflow or a single agent.
+    """
+    chain = route_workflows.get(route_key)
+    if chain is not None:
+        return create_sequential_pipeline(agents_config_path, chain)
+
+    agent_key = route_agents.get(route_key, route_key)
+    return _build_agent(agents_config, agent_key, agents_config_path)
+
+
+def create_router_pipeline(
+    agents_config_path: str = DEFAULT_AGENTS_CONFIG,
+    router_config_path: str = DEFAULT_ROUTER_CONFIG,
+    route_rules: Optional[dict[str, list[str]]] = None,
+) -> RouterOrchestrator:
+    #Build a RouterOrchestrator from the two JSON config files.
+    router_config = load_router_config(router_config_path)
+    agents_config = load_agent_config(agents_config_path)
+
+    rules = router_config["route_rules"] if route_rules is None else route_rules
+    route_agents = router_config["route_agents"]
+    route_workflows = router_config["route_workflows"]
+
+    router = RouterOrchestrator(
+        fallback_destination=_build_agent(
+            agents_config, router_config["fallback_key"], agents_config_path
+        )
+    )
+
+    # Registration order is the matching order, so it follows the order the
+    # rules appear in the config file.
+    for route_key, keywords in rules.items():
+        destination = _resolve_destination(
+            route_key,
+            agents_config,
+            agents_config_path,
+            route_workflows,
+            route_agents,
+        )
+        router.register_route(route_key, destination, keywords=list(keywords))
+
+    return router

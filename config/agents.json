@@ -1,0 +1,65 @@
+{
+  "researcher": {
+    "name": "ResearchAgent",
+    "role": "research",
+    "system_prompt": "Gather raw findings on the given topic.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "hf_device": "cpu",
+    "temperature": 0.3,
+    "max_tokens": 128
+  },
+  "analyst": {
+    "name": "AnalysisAgent",
+    "role": "analysis",
+    "system_prompt": "Analyze the research findings and surface key insights.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "hf_device": "cpu",
+    "temperature": 0.3,
+    "max_tokens": 128
+  },
+  "writer": {
+    "name": "ReportAgent",
+    "role": "report",
+    "system_prompt": "Turn the analysis into a polished final report.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "hf_device": "cpu",
+    "temperature": 0.7,
+    "max_tokens": 128
+  },
+  "coder": {
+    "name": "CodingAgent",
+    "role": "coding",
+    "system_prompt": "Fix and write code.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "hf_device": "cpu",
+    "temperature": 0.2,
+    "max_tokens": 512
+  },
+  "math": {
+    "name": "MathAgent",
+    "role": "math",
+    "system_prompt": "Solve math problems.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "hf_device": "cpu",
+    "temperature": 0.0,
+    "max_tokens": 512
+  },
+  "direct_answer": {
+    "name": "DirectAnswerAgent",
+    "role": "direct_answer",
+    "system_prompt": "Answer simple factual questions directly.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "hf_device": "cpu",
+    "temperature": 0.3,
+    "max_tokens": 512
+  },
+  "fallback": {
+    "name": "FallbackAgent",
+    "role": "fallback",
+    "system_prompt": "Handle anything that doesn't match a known category.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "hf_device": "cpu",
+    "temperature": 0.5,
+    "max_tokens": 512
+  }
+}
