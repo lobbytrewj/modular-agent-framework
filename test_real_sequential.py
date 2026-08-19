@@ -3,9 +3,13 @@ from __future__ import annotations
 from agent_framework.core.tasks import Task
 from agent_framework.orchestration.sequential import create_sequential_pipeline
 
-# Live test: this really runs the local model configured in config/agents.json
 AGENT_KEYS = ["researcher", "analyst", "writer"]
-TOPIC = "Investigate electric vehicle market trends"
+TOPIC = "Investigate best gpu's for efficiency"
+
+
+def indent(text: str, prefix: str = "    ") -> str:
+    """Indent a multi-line prompt so it reads as one block in the trace."""
+    return "\n".join(prefix + line for line in text.splitlines())
 
 
 def test_real_sequential_pipeline() -> None:
@@ -18,13 +22,14 @@ def test_real_sequential_pipeline() -> None:
 
     print("---- Live Sequential Pipeline Trace ----")
     print(f"topic: {TOPIC}\n")
-    for step_number, (agent, step) in enumerate(
-        zip(pipeline.agents, pipeline.step_results), start=1
+    for step_number, (agent, step_task, step) in enumerate(
+        zip(pipeline.agents, pipeline.step_tasks, pipeline.step_results), start=1
     ):
         client = agent.llm_client
         status = "OK" if step.success else "FAILED"
         print(f"[step {step_number}] {agent.name} ({agent.role}) ({status})")
         print(f"  model: {client.model} | device: {client.device} ({client.dtype})")
+        #print(f"  saw:\n{indent(step_task.description)}")
         if step.success:
             print(f"  output: {step.output}\n")
         else:
@@ -35,6 +40,16 @@ def test_real_sequential_pipeline() -> None:
     for step in pipeline.step_results:
         assert step.success is True, step.error
         assert step.output
+
+    # Downstream agents must be able to see upstream work: every step after the
+    # first carries the original topic plus each earlier agent's output.
+    for step_number, step_task in enumerate(pipeline.step_tasks[1:], start=2):
+        assert TOPIC in step_task.description, step_task.description
+        for prior_agent, prior_step in zip(
+            pipeline.agents[: step_number - 1], pipeline.step_results
+        ):
+            assert prior_agent.name in step_task.description, step_task.description
+            assert prior_step.output in step_task.description, step_task.description
 
     assert result.success is True, result.error
     assert result.error is None

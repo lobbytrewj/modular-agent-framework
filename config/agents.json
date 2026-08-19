@@ -1,4 +1,13 @@
 {
+  "manager": {
+    "name": "ManagerAgent",
+    "role": "manager",
+    "system_prompt": "You are a team leader. Decompose user requests into clear subtasks for specialists, and summarize their completed outputs into a final report.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "hf_device": "cpu",
+    "temperature": 0.3,
+    "max_tokens": 512
+  },
   "researcher": {
     "name": "ResearchAgent",
     "role": "research",
@@ -6,7 +15,7 @@
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "hf_device": "cpu",
     "temperature": 0.3,
-    "max_tokens": 128
+    "max_tokens": 512
   },
   "analyst": {
     "name": "AnalysisAgent",
@@ -15,7 +24,7 @@
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "hf_device": "cpu",
     "temperature": 0.3,
-    "max_tokens": 128
+    "max_tokens": 512
   },
   "writer": {
     "name": "ReportAgent",
@@ -26,13 +35,40 @@
     "temperature": 0.7,
     "max_tokens": 128
   },
+  "tech_researcher": {
+    "name": "TechResearchAgent",
+    "role": "tech_research",
+    "system_prompt": "You are a Chief Hardware & Software Engineer. Focus EXCLUSIVELY on technical specifications, hardware architectures, software frameworks, algorithms, and technical engineering challenges. DO NOT discuss market trends, financial metrics, investments, or economic impacts.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "hf_device": "cpu",
+    "temperature": 0.1,
+    "max_tokens": 512
+  },
+  "market_researcher": {
+    "name": "MarketResearchAgent",
+    "role": "market_research",
+    "system_prompt": "You are an Executive Editor. Synthesize the findings from all parallel workers into a structured report using sections: ## Technical Architecture, ## Market Analysis, and ## Strategic Summary. Retain specific numbers and product names from the worker findings.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "hf_device": "cpu",
+    "temperature": 0.1,
+    "max_tokens": 512
+  },
+  "synthesizer": {
+    "name": "SynthesizerAgent",
+    "role": "synthesizer",
+    "system_prompt": "Combine and synthesize research findings from multiple parallel agents into a comprehensive summary.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "hf_device": "cpu",
+    "temperature": 0.5,
+    "max_tokens": 256
+  },
   "coder": {
     "name": "CodingAgent",
     "role": "coding",
     "system_prompt": "Fix and write code.",
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "hf_device": "cpu",
-    "temperature": 0.2,
+    "temperature": 0.3,
     "max_tokens": 512
   },
   "math": {

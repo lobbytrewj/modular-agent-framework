@@ -33,8 +33,8 @@ def build_llm_client(entry: dict) -> LLMClient:
     return _CLIENT_CACHE[cache_key]
 
 
-# Runs a fixed lineup of agents one after another
-# each agent's finish line (its RunResult.output) becomes the next agent's starting line (its Task.description).
+# Runs a fixed lineup of agents one after another. Every step sees the original
+# objective plus the output of *all* the steps before it, not just the last one.
 class SequentialOrchestrator:
     def __init__(self, agents: Sequence[BaseAgent]):
         if not agents:
@@ -43,6 +43,10 @@ class SequentialOrchestrator:
 
         # holds every step's RunResult in order, so callers can inspect the whole pipeline, not just the final part.
         self.step_results: list[RunResult] = []
+
+        # The exact Task handed to each agent, same order as self.agents. Useful
+        # for debugging what context a given step actually saw.
+        self.step_tasks: list[Task] = []
 
     @classmethod
     def from_registry(
@@ -64,17 +68,55 @@ class SequentialOrchestrator:
             instances.append(agent_cls(**kwargs))
         return cls(instances)
 
+    def _build_step_task(
+        self, agent: BaseAgent, initial_task: Task, transcript: list[tuple[BaseAgent, str]]
+    ) -> Task:
+        """Compose the Task for one step: the original objective plus every
+        earlier step's output, each labelled with the agent that produced it.
+
+        Labelling matters: without it the analyst can't tell the research
+        findings apart from its own instructions, and the writer can't tell
+        which block is raw research and which is the analysis.
+        """
+        if not transcript:
+            # First step gets the user's request verbatim.
+            return initial_task
+
+        sections = [f"Original request:\n{initial_task.description}"]
+        for position, (prior_agent, output) in enumerate(transcript, start=1):
+            sections.append(
+                f"--- Step {position} output from {prior_agent.name} "
+                f"(role: {prior_agent.role}) ---\n{output}"
+            )
+        sections.append(
+            f"Using the original request and all of the step output above, "
+            f"do your job as the {agent.role} step."
+        )
+
+        return Task(
+            description="\n\n".join(sections),
+            assigned_agent=agent.name,
+            input_data=initial_task.input_data,
+        )
+
     def run(self, initial_task: Task) -> RunResult:
         # Data flow through the pipeline:
         #
         #   initial_task --> agents[0] --> RunResult_0
         #                                     |
-        #                     RunResult_0.output becomes the
-        #                     `description` of a new Task
+        #      original request + RunResult_0.output become the
+        #      `description` of a new Task
         #                                     v
         #                  agents[1] --> RunResult_1
         #                                     |
+        #      original request + RunResult_0.output + RunResult_1.output
+        #                                     v
+        #                  agents[2] --> RunResult_2
         #                                    ...
+        #
+        # Context accumulates rather than being replaced, so the analyst still
+        # knows what topic was asked about, and the writer can quote the raw
+        # research and not just the analyst's summary of it.
         #
         # `input_data` from the *original* task is carried along unchanged
         # at every hop, so shared context (config, IDs, etc.) is available
@@ -84,30 +126,23 @@ class SequentialOrchestrator:
         # failed/empty output to the next agent, and that failed RunResult
         # becomes the final result.
         self.step_results = []
-        current_task = initial_task
+        self.step_tasks = []
+
+        # (agent, output) for each step that succeeded, in order.
+        transcript: list[tuple[BaseAgent, str]] = []
         result: Optional[RunResult] = None
 
-        for step_index, agent in enumerate(self.agents):
+        for agent in self.agents:
+            current_task = self._build_step_task(agent, initial_task, transcript)
+            self.step_tasks.append(current_task)
+
             result = agent.execute(current_task)
             self.step_results.append(result)
 
             if not result.success:
                 break  # Halt the chain; don't propagate a failed step forward.
 
-            is_last_step = step_index == len(self.agents) - 1
-            if is_last_step:
-                break
-
-            next_agent = self.agents[step_index + 1]
-            # The hand-off: this step's textual output becomes the next
-            # step's input description. A fresh Task is built (rather than
-            # mutating current_task) so each step has its own id/description
-            # while still sharing the original input_data.
-            current_task = Task(
-                description=result.output or "",
-                assigned_agent=next_agent.name,
-                input_data=current_task.input_data,
-            )
+            transcript.append((agent, result.output or ""))
 
         # `result` is guaranteed to be set: self.agents is non-empty (checked
         # in __init__), so the loop always executes at least one iteration.
