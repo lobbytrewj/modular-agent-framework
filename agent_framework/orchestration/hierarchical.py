@@ -23,6 +23,36 @@ _AGENT_FIELDS = ("agent", "specialist", "worker", "role", "assignee", "name")
 _TASK_FIELDS = ("task", "subtask", "description", "instruction", "objective", "goal")
 
 
+# Bracket pairs tried by extract_json, in order. Which one goes first is not
+# cosmetic: it decides what a reply containing BOTH shapes is read as. A plan
+# is an array, so plan parsing tries arrays first; an evaluation is an object
+# whose "feedback" may itself hold an array, and reading that inner array as
+# the payload would discard the score sitting right next to it.
+ARRAY_FIRST = (("[", "]"), ("{", "}"))
+OBJECT_FIRST = (("{", "}"), ("[", "]"))
+
+
+def extract_json(text: str, order=ARRAY_FIRST):
+    """Pull a JSON array/object out of a model reply.
+
+    Instruct models wrap JSON in prose ("Sure! Here's the plan:") or in a
+    ```json fence even when told not to, so the payload is located by slicing
+    between the outermost brackets rather than parsing the whole reply.
+
+    `order` picks which bracket shape wins when the reply contains both - see
+    ARRAY_FIRST / OBJECT_FIRST above.
+    """
+    for opener, closer in order:
+        start = text.find(opener)
+        end = text.rfind(closer)
+        if start != -1 and end > start:
+            try:
+                return json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
 # One subtask: which specialist should do it, and what they were asked to do.
 class Subtask:
     def __init__(self, worker_key: str, description: str):
@@ -31,6 +61,171 @@ class Subtask:
 
     def __repr__(self) -> str:  # helpful when printing a plan in a test
         return f"Subtask(worker_key={self.worker_key!r}, description={self.description!r})"
+
+
+# Shared plan-parsing machinery for any orchestrator whose supervisor replies
+# with "who does what" assignments.
+#
+# Every method below reads nothing but `self.worker_agents`, which is why it
+# lifts cleanly out of the hierarchical team: the single-shot decomposition
+# (Goal 7) and the iterative orchestrator-worker loop (Goal 8) face the exact
+# same problem - a small local model that was asked for JSON and may or may not
+# have produced it - so they share one already-hardened parser instead of two
+# drifting copies.
+class SubtaskPlanParser:
+    # Supplied by the concrete orchestrator that mixes this in.
+    worker_agents: dict[str, BaseAgent]
+
+    def _roster(self) -> str:
+        """The menu of specialists shown to the leader.
+
+        The leader can only delegate to names it knows exist, so the roster is
+        generated from self.worker_agents rather than written by hand - add a
+        specialist to the team and the prompt updates itself.
+        """
+        return "\n".join(
+            f"- {key}: {agent.role} ({agent.name})"
+            for key, agent in self.worker_agents.items()
+        )
+
+    def _alias_lookup(self) -> dict[str, str]:
+        """Map every plausible spelling of a specialist onto its canonical key.
+
+        A leader asked for "researcher" may answer "Researcher", "research", or
+        "ResearchAgent" - all of which mean the same team member. Resolving
+        aliases here keeps the routing tolerant without letting an unknown name
+        silently become a real assignment.
+        """
+        aliases: dict[str, str] = {}
+        for key, agent in self.worker_agents.items():
+            for alias in (key, agent.name, agent.role):
+                aliases[alias.strip().lower()] = key
+        return aliases
+
+    def _resolve_worker(self, raw_name: str) -> Optional[str]:
+        """Turn whatever the leader wrote into a real worker key, or None."""
+        candidate = (raw_name or "").strip().lower()
+        if not candidate:
+            return None
+
+        aliases = self._alias_lookup()
+        if candidate in aliases:
+            return candidate if candidate in self.worker_agents else aliases[candidate]
+
+        # Substring match catches "the researcher agent" and "coder (python)".
+        # Only accepted when exactly one specialist matches, so an ambiguous
+        # name is dropped rather than routed to an arbitrary team member.
+        hits = {key for alias, key in aliases.items() if alias in candidate}
+        if len(hits) == 1:
+            return hits.pop()
+        return None
+
+    @staticmethod
+    def _first_value(entry: dict, fields: Iterable[str]) -> Optional[str]:
+        for field in fields:
+            value = entry.get(field)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    # Kept as a method so existing callers and subclasses keep working; the
+    # implementation lives at module scope because parsing JSON out of a chatty
+    # reply is not specific to plans - the evaluator-optimizer loop needs the
+    # identical trick for its score objects.
+    _extract_json = staticmethod(extract_json)
+
+    def _parse_json_plan(self, text: str) -> list[Subtask]:
+        payload = self._extract_json(text)
+
+        # Accept both a bare array and the {"subtasks": [...]} wrapper models
+        # like to add unprompted.
+        if isinstance(payload, dict):
+            for field in ("subtasks", "tasks", "plan", "assignments"):
+                if isinstance(payload.get(field), list):
+                    payload = payload[field]
+                    break
+            else:
+                payload = [payload]
+        if not isinstance(payload, list):
+            return []
+
+        plan: list[Subtask] = []
+        for entry in payload:
+            if not isinstance(entry, dict):
+                continue
+            worker_key = self._resolve_worker(self._first_value(entry, _AGENT_FIELDS) or "")
+            description = self._first_value(entry, _TASK_FIELDS)
+            # Both halves are required: an assignment with no owner can't be
+            # routed, and an owner with no instruction has nothing to do.
+            if worker_key and description:
+                plan.append(Subtask(worker_key, description))
+        return plan
+
+    def _parse_key_list(self, text: str) -> list[str]:
+        """Recover a plan of the degenerate form ["coder", "reviewer"].
+
+        Observed live: asked for [{"agent","task"}] objects, a small model will
+        sometimes answer with a bare JSON array of specialist names - it has
+        decided WHO should work but written no instruction for them. That is a
+        partial plan, not a broken one, so the names are worth keeping and the
+        caller can supply the missing description.
+
+        Every element must be a string that resolves to a real specialist. One
+        that doesn't means this isn't the bare-name pattern at all (an array of
+        prose sentences, say), and the whole reply is rejected rather than
+        half-read.
+        """
+        start = text.find("[")
+        end = text.rfind("]")
+        if start == -1 or end <= start:
+            return []
+
+        inner = text[start + 1 : end].strip()
+        if not inner:
+            return []
+
+        # Deliberately not routed through _extract_json: the live failure this
+        # tier exists for was the *unquoted* "[coder, reviewer]", which is not
+        # valid JSON at all. Splitting the bracketed span on commas handles the
+        # quoted and unquoted spellings with one code path.
+        keys: list[str] = []
+        for element in inner.split(","):
+            candidate = element.strip().strip('"\'')
+
+            # Any JSON structure means this is a malformed object plan, not a
+            # bare name list. Bail rather than let _resolve_worker's substring
+            # matching find "coder" inside '{"agent": "coder"'.
+            if not candidate or set('{}:[]') & set(candidate):
+                return []
+
+            worker_key = self._resolve_worker(candidate)
+            if not worker_key:
+                # One unresolvable element means this isn't the bare-name
+                # pattern (an array of prose sentences, say), so the whole
+                # reply is rejected rather than half-read.
+                return []
+            keys.append(worker_key)
+        return keys
+
+    def _parse_labelled_plan(self, text: str) -> list[Subtask]:
+        """Fallback for when the leader ignored the JSON instruction.
+
+        Handles the common prose shapes: "researcher: do X", "1. Coder - do Y",
+        "**analyst**: do Z". Anything whose label isn't a known specialist is
+        skipped, so ordinary sentences don't become subtasks.
+        """
+        plan: list[Subtask] = []
+        pattern = re.compile(r"^\s*(?:[-*\d.\)\s]*)?\**([\w /-]{2,40}?)\**\s*[:\-]\s+(.+)$")
+
+        for line in text.splitlines():
+            match = pattern.match(line)
+            if not match:
+                continue
+            worker_key = self._resolve_worker(match.group(1))
+            description = match.group(2).strip()
+            if worker_key and description:
+                plan.append(Subtask(worker_key, description))
+        return plan
 
 
 # A manager agent that plans the work, hands pieces to specialists, then writes
@@ -52,7 +247,7 @@ class Subtask:
 #                      leader (synthesize)
 #                             |
 #                         RunResult
-class HierarchicalOrchestrator:
+class HierarchicalOrchestrator(SubtaskPlanParser):
     def __init__(self, leader_agent: BaseAgent, worker_agents: dict[str, BaseAgent]):
         if not worker_agents:
             raise ValueError("HierarchicalOrchestrator requires at least one worker agent")
@@ -105,18 +300,6 @@ class HierarchicalOrchestrator:
 
     # --- Step 1: decomposition -------------------------------------------
 
-    def _roster(self) -> str:
-        """The menu of specialists shown to the leader.
-
-        The leader can only delegate to names it knows exist, so the roster is
-        generated from self.worker_agents rather than written by hand - add a
-        specialist to the team and the prompt updates itself.
-        """
-        return "\n".join(
-            f"- {key}: {agent.role} ({agent.name})"
-            for key, agent in self.worker_agents.items()
-        )
-
     def _build_decomposition_task(self, initial_task: Task) -> Task:
         """Ask the leader to split the request across the available specialists.
 
@@ -140,112 +323,6 @@ class HierarchicalOrchestrator:
         )
 
     # --- Step 2: parsing and routing --------------------------------------
-
-    def _alias_lookup(self) -> dict[str, str]:
-        """Map every plausible spelling of a specialist onto its canonical key.
-
-        A leader asked for "researcher" may answer "Researcher", "research", or
-        "ResearchAgent" - all of which mean the same team member. Resolving
-        aliases here keeps the routing tolerant without letting an unknown name
-        silently become a real assignment.
-        """
-        aliases: dict[str, str] = {}
-        for key, agent in self.worker_agents.items():
-            for alias in (key, agent.name, agent.role):
-                aliases[alias.strip().lower()] = key
-        return aliases
-
-    def _resolve_worker(self, raw_name: str) -> Optional[str]:
-        """Turn whatever the leader wrote into a real worker key, or None."""
-        candidate = (raw_name or "").strip().lower()
-        if not candidate:
-            return None
-
-        aliases = self._alias_lookup()
-        if candidate in aliases:
-            return candidate if candidate in self.worker_agents else aliases[candidate]
-
-        # Substring match catches "the researcher agent" and "coder (python)".
-        # Only accepted when exactly one specialist matches, so an ambiguous
-        # name is dropped rather than routed to an arbitrary team member.
-        hits = {key for alias, key in aliases.items() if alias in candidate}
-        if len(hits) == 1:
-            return hits.pop()
-        return None
-
-    @staticmethod
-    def _first_value(entry: dict, fields: Iterable[str]) -> Optional[str]:
-        for field in fields:
-            value = entry.get(field)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return None
-
-    @staticmethod
-    def _extract_json(text: str):
-        """Pull a JSON array/object out of a model reply.
-
-        Instruct models wrap JSON in prose ("Sure! Here's the plan:") or in a
-        ```json fence even when told not to, so the payload is located by
-        slicing between the outermost brackets rather than parsing the whole
-        reply.
-        """
-        for opener, closer in (("[", "]"), ("{", "}")):
-            start = text.find(opener)
-            end = text.rfind(closer)
-            if start != -1 and end > start:
-                try:
-                    return json.loads(text[start : end + 1])
-                except json.JSONDecodeError:
-                    continue
-        return None
-
-    def _parse_json_plan(self, text: str) -> list[Subtask]:
-        payload = self._extract_json(text)
-
-        # Accept both a bare array and the {"subtasks": [...]} wrapper models
-        # like to add unprompted.
-        if isinstance(payload, dict):
-            for field in ("subtasks", "tasks", "plan", "assignments"):
-                if isinstance(payload.get(field), list):
-                    payload = payload[field]
-                    break
-            else:
-                payload = [payload]
-        if not isinstance(payload, list):
-            return []
-
-        plan: list[Subtask] = []
-        for entry in payload:
-            if not isinstance(entry, dict):
-                continue
-            worker_key = self._resolve_worker(self._first_value(entry, _AGENT_FIELDS) or "")
-            description = self._first_value(entry, _TASK_FIELDS)
-            # Both halves are required: an assignment with no owner can't be
-            # routed, and an owner with no instruction has nothing to do.
-            if worker_key and description:
-                plan.append(Subtask(worker_key, description))
-        return plan
-
-    def _parse_labelled_plan(self, text: str) -> list[Subtask]:
-        """Fallback for when the leader ignored the JSON instruction.
-
-        Handles the common prose shapes: "researcher: do X", "1. Coder - do Y",
-        "**analyst**: do Z". Anything whose label isn't a known specialist is
-        skipped, so ordinary sentences don't become subtasks.
-        """
-        plan: list[Subtask] = []
-        pattern = re.compile(r"^\s*(?:[-*\d.\)\s]*)?\**([\w /-]{2,40}?)\**\s*[:\-]\s+(.+)$")
-
-        for line in text.splitlines():
-            match = pattern.match(line)
-            if not match:
-                continue
-            worker_key = self._resolve_worker(match.group(1))
-            description = match.group(2).strip()
-            if worker_key and description:
-                plan.append(Subtask(worker_key, description))
-        return plan
 
     def _parse_plan(self, text: str, initial_task: Task) -> list[Subtask]:
         """Turn the leader's reply into a routable plan, always returning one.
