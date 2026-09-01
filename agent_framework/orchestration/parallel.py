@@ -3,12 +3,12 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Sequence
 
-from agent_framework.agents import BaseAgent, LLMAgent
+from agent_framework.agents import BaseAgent, LLMAgent, execute_agent
+from agent_framework.core.memory import SharedWorkflowMemory
 from agent_framework.core.tasks import RunResult, Task
 from agent_framework.orchestration.registry import AgentRegistry
 from agent_framework.orchestration.sequential import (
-    AGENT_PARAMS,
-    build_llm_client,
+    build_agent_kwargs,
     load_agent_config,
 )
 
@@ -82,7 +82,11 @@ class ParallelOrchestrator:
         return cls(workers, synthesizer, max_workers=max_workers)
 
     @staticmethod
-    def _run_worker(agent: BaseAgent, initial_task: Task) -> RunResult:
+    def _run_worker(
+        agent: BaseAgent,
+        initial_task: Task,
+        shared_memory: Optional[SharedWorkflowMemory] = None,
+    ) -> RunResult:
         """Execute one worker on its own copy of the request.
 
         This is the function that actually runs on a pool thread. Each worker
@@ -90,6 +94,11 @@ class ParallelOrchestrator:
         id, and giving every branch its own means a RunResult can be traced
         back to the branch that produced it. `input_data` is passed along so
         shared context reaches every worker.
+
+        The blackboard, unlike the Task, is deliberately NOT copied: the
+        point of it is that all branches see one shared surface. That is
+        also why SharedWorkflowMemory locks its writes - this function
+        runs on a pool thread, several copies of it at once.
         """
         worker_task = Task(
             description=initial_task.description,
@@ -97,7 +106,7 @@ class ParallelOrchestrator:
             input_data=initial_task.input_data,
         )
         try:
-            return agent.execute(worker_task)
+            return execute_agent(agent, worker_task, shared_memory)
         except Exception as exc:  # noqa: BLE001 - a crashed worker is just a failed branch
             return RunResult(
                 task_id=worker_task.id,
@@ -124,7 +133,11 @@ class ParallelOrchestrator:
             f"Worker Findings:\n" + "\n\n".join(blocks)
         )
 
-    def run(self, initial_task: Task) -> RunResult:
+    def run(
+        self,
+        initial_task: Task,
+        shared_memory: Optional[SharedWorkflowMemory] = None,
+    ) -> RunResult:
         self.step_results = []
 
         # --- Fan-out -----------------------------------------------------
@@ -134,7 +147,7 @@ class ParallelOrchestrator:
         # arguments and returns immediately with a Future
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = [
-                executor.submit(self._run_worker, agent, initial_task)
+                executor.submit(self._run_worker, agent, initial_task, shared_memory)
                 for agent in self.worker_agents
             ]
 
@@ -175,7 +188,9 @@ class ParallelOrchestrator:
             assigned_agent=self.synthesizer_agent.name,
             input_data=initial_task.input_data,
         )
-        synthesis_result = self.synthesizer_agent.execute(synthesis_task)
+        synthesis_result = execute_agent(
+            self.synthesizer_agent, synthesis_task, shared_memory
+        )
         self.step_results.append(synthesis_result)
         return synthesis_result
 
@@ -215,9 +230,7 @@ def create_parallel_pipeline(
         # workers configured identically share one loaded copy of the weights
         # rather than each paying the load cost.
         registry.register(key, LLMAgent)
-        kwargs = {param: entry[param] for param in AGENT_PARAMS if param in entry}
-        kwargs["llm_client"] = build_llm_client(entry)
-        agent_kwargs[key] = kwargs
+        agent_kwargs[key] = build_agent_kwargs(entry)
 
     return ParallelOrchestrator.from_registry(
         worker_names=worker_keys,

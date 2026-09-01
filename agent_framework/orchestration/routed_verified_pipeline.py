@@ -5,7 +5,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-from agent_framework.agents import BaseAgent, LLMAgent
+from agent_framework.agents import BaseAgent, LLMAgent, execute_agent
+from agent_framework.core.memory import SharedWorkflowMemory, call_with_shared_memory
 from agent_framework.core.tasks import RunResult, Task
 from agent_framework.orchestration.hierarchical import OBJECT_FIRST, extract_json
 from agent_framework.orchestration.router import (
@@ -15,8 +16,7 @@ from agent_framework.orchestration.router import (
     create_router_pipeline,
 )
 from agent_framework.orchestration.sequential import (
-    AGENT_PARAMS,
-    build_llm_client,
+    build_agent_kwargs,
     load_agent_config,
 )
 
@@ -66,14 +66,7 @@ class AutoRoutedVerifiedPipeline:
     # --- Prompt construction ---
 
     def _build_verification_task(self, original_task: Task, workflow_output: str) -> Task:
-        """Ask the verifier whether the output actually satisfies the request.
-
-        The original request travels with the output for the same reason it
-        does in the evaluator-optimizer: verification is a comparison, and an
-        answer can only be judged incomplete relative to what was asked. A
-        verifier shown output alone can tell you the code runs; it cannot tell
-        you it solves the wrong problem.
-        """
+        """Ask the verifier whether the output actually satisfies the request."""
         description = (
             f"Original user request:\n{original_task.description}\n\n"
             f"Output produced by the workflow:\n{workflow_output}\n\n"
@@ -95,28 +88,8 @@ class AutoRoutedVerifiedPipeline:
     def _build_retry_task(
         self, original_task: Task, feedback: str, previous_output: str
     ) -> Task:
-        """Compose the next attempt: the request, what was produced, what was wrong.
-
-        Two constraints shape this text, and they pull in different directions.
-
-        As a PROMPT it needs the critique, or the next attempt repeats the
-        last one - the same feedback-injection argument as the evaluator-
-        optimizer's refinement task.
-
-        As a ROUTING KEY it is also the string the router will keyword-match
-        on, which the evaluator-optimizer never had to worry about. That is why
-        the original request is placed FIRST and verbatim: keyword rules match
-        in registration order against the whole description, so leading with
-        the original text keeps a retry landing on the same route that the
-        first attempt matched. Without that, a critique mentioning "explain" or
-        "research" could silently reroute a coding task to a different
-        destination - and a retry that changes both the worker and the
-        instructions tells you nothing about which change mattered.
-        """
+        """Compose the next attempt: the request, what was produced, what was wrong."""
         if not feedback.strip() or feedback.strip() == NO_FEEDBACK:
-            # An absent critique makes the retry a re-roll rather than a
-            # correction, so say something directive instead of pasting the
-            # placeholder in as though it were a defect report.
             critique_block = (
                 "A verifier judged that output incomplete but did not say why. "
                 "Re-examine the request yourself and produce a more complete, "
@@ -142,8 +115,104 @@ class AutoRoutedVerifiedPipeline:
         )
 
     # --- Verdict parsing --- (still need to do)
+    @staticmethod
+    def _coerce_bool(value) -> Optional[bool]:
+        """Read a completeness flag that may be a bool, a string, or a number."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in ("true", "yes", "complete", "completed", "pass", "passed", "y", "1"):
+                return True
+            if lowered in ("false", "no", "incomplete", "fail", "failed", "n", "0"):
+                return False
+        return None
 
-    # --- Status --- ( still wokring on it)
+    def _parse_verdict(self, text: str) -> VerificationVerdict:
+        """Turn the verifier's reply into a verdict. Always returns one."""
+        text = text or ""
+        payload = extract_json(text, OBJECT_FIRST)
+
+        is_complete: Optional[bool] = None
+        feedback = ""
+        verdict_parsed = isinstance(payload, dict)
+
+        # --- Tier 1: a real JSON object, which is what we asked for ---
+        if isinstance(payload, dict):
+            for wrapper in ("verdict", "result", "verification", "evaluation"):
+                inner = payload.get(wrapper)
+                if isinstance(inner, dict):
+                    payload = inner
+                    break
+
+            for key in _COMPLETE_FIELDS:
+                if key in payload:
+                    is_complete = self._coerce_bool(payload[key])
+                    if is_complete is not None:
+                        break
+            for key in _FEEDBACK_FIELDS:
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    feedback = value.strip()
+                    break
+                if isinstance(value, list) and value:
+                    joined = "\n".join(f"- {item}" for item in value if str(item).strip())
+                    if joined:
+                        feedback = joined
+                        break
+
+        # --- Tier 2: regex over the prose ---
+        if is_complete is None:
+            assignment = re.search(
+                r'["\']?\b(?:is_complete|complete|completed|passed|satisfied|done)\b'
+                r'["\']?\s*[:=]\s*["\']?(\w+)',
+                text,
+                re.IGNORECASE,
+            )
+            if assignment:
+                is_complete = self._coerce_bool(assignment.group(1))
+
+            if is_complete is None:
+                # Negations are checked first
+                if re.search(
+                    r"\b(?:in|not )complete\b|\bincomplete\b|\bmissing\b|\bfail(?:ed|s)?\b",
+                    text,
+                    re.IGNORECASE,
+                ):
+                    is_complete = False
+                elif re.search(
+                    r'\b(?:complete|satisfied|correct)\b(?!\s*["\']?\s*[:=])',
+                    text,
+                    re.IGNORECASE,
+                ):
+                    is_complete = True
+
+        if not feedback:
+            match = re.search(r'"?feedback"?\s*[:=]\s*"([^"]+)"', text, re.IGNORECASE)
+            if match:
+                feedback = match.group(1).strip()
+            elif not verdict_parsed:
+                feedback = text.strip()
+            else:
+                feedback = NO_FEEDBACK
+
+        if is_complete is None:
+            logger.warning(
+                "Could not read a verdict from the verifier; treating the output "
+                "as unverified. Raw reply: %.120s",
+                text.replace("\n", " "),
+            )
+            is_complete = False
+
+        return VerificationVerdict(
+            is_complete=is_complete,
+            feedback=feedback,
+            raw_response=text,
+        )
+
+    # --- Status ---
 
     def status_summary(self) -> str:
         """One line describing how the run ended."""
@@ -162,7 +231,12 @@ class AutoRoutedVerifiedPipeline:
         )
 
     # --- The run loop ---
-    def run(self, initial_task: Task) -> RunResult:
+
+    def run(
+        self,
+        initial_task: Task,
+        shared_memory: Optional[SharedWorkflowMemory] = None,
+    ) -> RunResult:
         self.history = []
         self.step_results = []
         self.verified = False
@@ -174,7 +248,9 @@ class AutoRoutedVerifiedPipeline:
         for attempt in range(1, self.max_attempts + 1):
             self.attempts_used = attempt
 
-            routed = self.router.run(current_task)
+            routed = call_with_shared_memory(
+                self.router.run, current_task, shared_memory
+            )
             self.step_results.append(routed)
 
             chosen_route = (
@@ -200,9 +276,10 @@ class AutoRoutedVerifiedPipeline:
 
             latest_output = routed.output or ""
 
-
-            verification = self.verifier_agent.execute(
-                self._build_verification_task(initial_task, latest_output)
+            verification = execute_agent(
+                self.verifier_agent,
+                self._build_verification_task(initial_task, latest_output),
+                shared_memory,
             )
             self.step_results.append(verification)
 
@@ -256,3 +333,39 @@ class AutoRoutedVerifiedPipeline:
             error=self.status_summary(),
         )
 
+
+def create_routed_verified_pipeline(
+    agents_config_path: str = DEFAULT_AGENTS_CONFIG,
+    router_config_path: str = DEFAULT_ROUTER_CONFIG,
+    verifier_key: str = "verifier",
+    max_attempts: int = 2,
+) -> AutoRoutedVerifiedPipeline:
+    """Build a router from the two config files and wrap it in a quality gate."""
+    router = create_router_pipeline(agents_config_path, router_config_path)
+
+    agents_config = load_agent_config(agents_config_path)
+    if verifier_key not in agents_config:
+        raise KeyError(f"No agent configured under key '{verifier_key}' in {agents_config_path}")
+
+    entry = agents_config[verifier_key]
+    if not isinstance(entry, dict):
+        raise ValueError(
+            f"Config entry for '{verifier_key}' in {agents_config_path} must be an "
+            f"object, got {type(entry).__name__}"
+        )
+
+    kwargs = build_agent_kwargs(entry)
+    kwargs.setdefault("name", verifier_key)
+    kwargs.setdefault("role", verifier_key)
+    kwargs.setdefault(
+        "system_prompt",
+        "You verify whether output satisfies the user's request and reply with "
+        'JSON: {"is_complete": <bool>, "feedback": "<what is missing>"}.',
+    )
+    verifier_agent = LLMAgent(**kwargs)
+
+    return AutoRoutedVerifiedPipeline(
+        router=router,
+        verifier_agent=verifier_agent,
+        max_attempts=max_attempts,
+    )

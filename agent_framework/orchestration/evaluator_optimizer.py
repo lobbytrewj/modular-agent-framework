@@ -5,13 +5,13 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from agent_framework.agents import BaseAgent, LLMAgent
+from agent_framework.agents import BaseAgent, LLMAgent, execute_agent
+from agent_framework.core.memory import SharedWorkflowMemory
 from agent_framework.core.tasks import RunResult, Task
 from agent_framework.orchestration.hierarchical import OBJECT_FIRST, extract_json
 from agent_framework.orchestration.registry import AgentRegistry
 from agent_framework.orchestration.sequential import (
-    AGENT_PARAMS,
-    build_llm_client,
+    build_agent_kwargs,
     load_agent_config,
 )
 
@@ -404,13 +404,23 @@ class EvaluatorOptimizerPipeline:
             f"{best.evaluation.score:g}"
         )
 
-    def run(self, initial_task: Task) -> RunResult:
+    def run(
+        self,
+        initial_task: Task,
+        shared_memory: Optional[SharedWorkflowMemory] = None,
+    ) -> RunResult:
+        # Note what the blackboard is NOT used for here: the draft moves
+        # from round to round in the prompt, exactly as before. Refinement
+        # depends on the generator seeing its own previous text next to the
+        # critique, and routing that through shared state would hide the
+        # one thing the loop is actually about. What the blackboard adds is
+        # visibility for everyone outside the loop.
         self.history = []
         self.step_results = []
         self.passed_threshold = False
         self.best_step = None
 
-        generation = self.generator_agent.execute(initial_task)
+        generation = execute_agent(self.generator_agent, initial_task, shared_memory)
         self.step_results.append(generation)
         if not generation.success:
 
@@ -420,8 +430,10 @@ class EvaluatorOptimizerPipeline:
 
 
         for round_number in range(1, self.max_retries + 1):
-            evaluation_result = self.evaluator_agent.execute(
-                self._build_evaluation_task(draft, initial_task)
+            evaluation_result = execute_agent(
+                self.evaluator_agent,
+                self._build_evaluation_task(draft, initial_task),
+                shared_memory,
             )
             self.step_results.append(evaluation_result)
 
@@ -457,8 +469,10 @@ class EvaluatorOptimizerPipeline:
             if round_number == self.max_retries:
                 break
 
-            refinement = self.generator_agent.execute(
-                self._build_refinement_task(draft, evaluation.feedback, initial_task)
+            refinement = execute_agent(
+                self.generator_agent,
+                self._build_refinement_task(draft, evaluation.feedback, initial_task),
+                shared_memory,
             )
             self.step_results.append(refinement)
 
@@ -516,9 +530,7 @@ def create_evaluator_optimizer_pipeline(
             )
 
         registry.register(key, LLMAgent)
-        kwargs = {param: entry[param] for param in AGENT_PARAMS if param in entry}
-        kwargs["llm_client"] = build_llm_client(entry)
-        agent_kwargs[key] = kwargs
+        agent_kwargs[key] = build_agent_kwargs(entry)
 
     return EvaluatorOptimizerPipeline.from_registry(
         generator_name=generator_key,

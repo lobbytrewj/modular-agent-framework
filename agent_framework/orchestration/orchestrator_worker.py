@@ -3,13 +3,13 @@ from __future__ import annotations
 import logging
 from typing import Optional, Sequence, Union
 
-from agent_framework.agents import BaseAgent, LLMAgent
+from agent_framework.agents import BaseAgent, LLMAgent, execute_agent
+from agent_framework.core.memory import SharedWorkflowMemory
 from agent_framework.core.tasks import RunResult, Task
 from agent_framework.orchestration.hierarchical import Subtask, SubtaskPlanParser
 from agent_framework.orchestration.registry import AgentRegistry
 from agent_framework.orchestration.sequential import (
-    AGENT_PARAMS,
-    build_llm_client,
+    build_agent_kwargs,
     load_agent_config,
 )
 
@@ -196,7 +196,12 @@ class OrchestratorWorkerPipeline(SubtaskPlanParser):
             input_data=initial_task.input_data,
         )
 
-    def _dispatch(self, subtasks: list[Subtask], initial_task: Task) -> list[dict]:
+    def _dispatch(
+        self,
+        subtasks: list[Subtask],
+        initial_task: Task,
+        shared_memory: Optional[SharedWorkflowMemory] = None,
+    ) -> list[dict]:
         """Run one round's subtasks and return a record of each outcome.
         """
         outputs: list[dict] = []
@@ -204,7 +209,7 @@ class OrchestratorWorkerPipeline(SubtaskPlanParser):
             worker = self.worker_agents[subtask.worker_key]
             worker_task = self._build_worker_task(subtask, initial_task)
             try:
-                result = worker.execute(worker_task)
+                result = execute_agent(worker, worker_task, shared_memory)
             except Exception as exc:  # noqa: BLE001 - one bad specialist isn't fatal
                 result = RunResult(
                     task_id=worker_task.id,
@@ -245,7 +250,15 @@ class OrchestratorWorkerPipeline(SubtaskPlanParser):
 
     # --- The run loop ---
 
-    def run(self, initial_task: Task) -> RunResult:
+    def run(
+        self,
+        initial_task: Task,
+        shared_memory: Optional[SharedWorkflowMemory] = None,
+    ) -> RunResult:
+        # Every round of the loop writes to the same blackboard, so an
+        # artifact a specialist published on round 1 is still there for a
+        # different specialist to build on in round 3 - without it having
+        # to survive the round-by-round prose summary in between.
         self.iteration_history = []
         self.step_results = []
         self.completed_naturally = False
@@ -255,7 +268,7 @@ class OrchestratorWorkerPipeline(SubtaskPlanParser):
             self.iterations_used = iteration + 1
 
             review_task = self._build_review_task(initial_task)
-            review = self.orchestrator_agent.execute(review_task)
+            review = execute_agent(self.orchestrator_agent, review_task, shared_memory)
             self.step_results.append(review)
 
             if not review.success:
@@ -294,7 +307,7 @@ class OrchestratorWorkerPipeline(SubtaskPlanParser):
                     output=synthesis,
                 )
             
-            outputs = self._dispatch(subtasks, initial_task)
+            outputs = self._dispatch(subtasks, initial_task, shared_memory)
             self.iteration_history.append(
                 {
                     "iteration": iteration,
@@ -328,8 +341,10 @@ class OrchestratorWorkerPipeline(SubtaskPlanParser):
             self.max_iterations,
             self.completion_phrase,
         )
-        final_result = self.orchestrator_agent.execute(
-            self._build_consolidation_task(initial_task)
+        final_result = execute_agent(
+            self.orchestrator_agent,
+            self._build_consolidation_task(initial_task),
+            shared_memory,
         )
         self.step_results.append(final_result)
 
@@ -408,9 +423,7 @@ def create_orchestrator_worker_pipeline(
             )
 
         registry.register(key, LLMAgent)
-        kwargs = {param: entry[param] for param in AGENT_PARAMS if param in entry}
-        kwargs["llm_client"] = build_llm_client(entry)
-        agent_kwargs[key] = kwargs
+        agent_kwargs[key] = build_agent_kwargs(entry)
 
     return OrchestratorWorkerPipeline.from_registry(
         orchestrator_name=orchestrator_key,

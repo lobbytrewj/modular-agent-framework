@@ -5,11 +5,11 @@ import logging
 from pathlib import Path
 from typing import Callable, Optional, Protocol, Union, runtime_checkable
 
-from agent_framework.agents import BaseAgent, LLMAgent, MockAgent
+from agent_framework.agents import BaseAgent, LLMAgent, MockAgent, execute_agent
+from agent_framework.core.memory import SharedWorkflowMemory, call_with_shared_memory
 from agent_framework.core.tasks import RunResult, Task
 from agent_framework.orchestration.sequential import (
-    AGENT_PARAMS,
-    build_llm_client,
+    build_agent_kwargs,
     create_sequential_pipeline,
     load_agent_config,
 )
@@ -22,7 +22,11 @@ logger = logging.getLogger(__name__)
 class Runnable(Protocol):
 
 
-    def run(self, task: Task) -> RunResult:
+    def run(
+        self,
+        task: Task,
+        shared_memory: Optional[SharedWorkflowMemory] = None,
+    ) -> RunResult:
         ...
 
 
@@ -122,18 +126,32 @@ class RouterOrchestrator:
         return self._FALLBACK_KEY
 
     @staticmethod
-    def _execute(destination: Destination, task: Task) -> RunResult:
-        """Run `task` against `destination`, whether it's a BaseAgent or an orchestrator."""
+    def _execute(
+        destination: Destination,
+        task: Task,
+        shared_memory: Optional[SharedWorkflowMemory] = None,
+    ) -> RunResult:
+        """Run `task` against `destination`, whether it's a BaseAgent or an orchestrator.
+
+        Either way the blackboard is handed on: a route that points at a
+        sub-workflow must pass it all the way down, or artifacts would
+        stop at the routing boundary - exactly the place a run crosses
+        from one workflow into another.
+        """
         if isinstance(destination, BaseAgent):
-            return destination.execute(task)
+            return execute_agent(destination, task, shared_memory)
         if isinstance(destination, Runnable):
-            return destination.run(task)
+            return call_with_shared_memory(destination.run, task, shared_memory)
         raise TypeError(
             f"Destination {destination!r} is neither a BaseAgent (execute) "
             "nor a Runnable orchestrator (run)"
         )
 
-    def run(self, task: Task) -> RunResult:
+    def run(
+        self,
+        task: Task,
+        shared_memory: Optional[SharedWorkflowMemory] = None,
+    ) -> RunResult:
         """Route the task to a single destination and return its RunResult.
 
         Steps:
@@ -160,7 +178,20 @@ class RouterOrchestrator:
             task.description,
         )
 
-        return self._execute(destination, task)
+        # The routing decision itself goes on the shared audit trail, not
+        # just in self.routing_log: read back later, "which route did this
+        # run take" is only answerable if the choice is interleaved with
+        # the steps it caused.
+        if shared_memory is not None:
+            shared_memory.log_step(
+                agent="router",
+                task=task.description,
+                workflow="router",
+                route=decision_record["route"],
+                task_id=task.id,
+            )
+
+        return self._execute(destination, task, shared_memory)
 
 
 DEFAULT_AGENTS_CONFIG = "config/agents.json"
@@ -222,7 +253,7 @@ def _build_agent(config: dict[str, dict], key: str, config_path: str) -> BaseAge
             f"got {type(entry).__name__}"
         )
 
-    kwargs = {param: entry[param] for param in AGENT_PARAMS if param in entry}
+    kwargs = build_agent_kwargs(entry)
     kwargs.setdefault("name", key)
     kwargs.setdefault("role", key)
     kwargs.setdefault("system_prompt", f"You are the '{key}' destination of a router.")
@@ -233,7 +264,7 @@ def _build_agent(config: dict[str, dict], key: str, config_path: str) -> BaseAge
 
     # Real LLM-backed agent. It gets its own client so per-agent model settings
     # (model, temperature, max_tokens) in the config are honoured.
-    return LLMAgent(**kwargs, llm_client=build_llm_client(entry))
+    return LLMAgent(**kwargs)
 
 
 def _resolve_destination(

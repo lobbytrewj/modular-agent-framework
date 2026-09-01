@@ -4,8 +4,9 @@ import json
 from pathlib import Path
 from typing import Optional, Sequence
 
-from agent_framework.agents import BaseAgent, LLMAgent, MockAgent
+from agent_framework.agents import BaseAgent, LLMAgent, MockAgent, execute_agent
 from agent_framework.core.llm import LLMClient
+from agent_framework.core.memory import AgentMemory, SharedWorkflowMemory
 from agent_framework.core.tasks import RunResult, Task
 from agent_framework.orchestration.registry import AgentRegistry
 
@@ -31,6 +32,37 @@ def build_llm_client(entry: dict) -> LLMClient:
     if cache_key not in _CLIENT_CACHE:
         _CLIENT_CACHE[cache_key] = LLMClient(**settings)
     return _CLIENT_CACHE[cache_key]
+
+
+# Memory settings a config entry may carry, forwarded to LLMAgent.
+#
+#   "memory": true        give this agent its own AgentMemory, so it remembers
+#                         its own turns between execute() calls
+#   "history_window": n   how many of those turns get replayed into the prompt
+#   "context_keys": [...] which SHARED artifacts it wants to see (default: all)
+#   "output_key": "name"  where it publishes its own output on the blackboard
+MEMORY_PARAMS = ("history_window", "context_keys", "output_key")
+
+
+def build_agent_kwargs(entry: dict) -> dict:
+    """Turn one config entry into the keyword arguments for an LLMAgent.
+
+    Shared by every orchestration factory so a setting added to the config
+    format reaches all of them at once, rather than five near-identical dict
+    comprehensions drifting apart.
+
+    Each agent gets a *fresh* AgentMemory when it asks for one: agent-local
+    memory is private by definition, so two agents sharing one instance would
+    be a bug that shows up as one agent quoting another's turns.
+    """
+    kwargs = {param: entry[param] for param in AGENT_PARAMS if param in entry}
+    kwargs.update({param: entry[param] for param in MEMORY_PARAMS if param in entry})
+
+    if entry.get("memory"):
+        kwargs["memory"] = AgentMemory()
+
+    kwargs["llm_client"] = build_llm_client(entry)
+    return kwargs
 
 
 # Runs a fixed lineup of agents one after another. Every step sees the original
@@ -99,7 +131,11 @@ class SequentialOrchestrator:
             input_data=initial_task.input_data,
         )
 
-    def run(self, initial_task: Task) -> RunResult:
+    def run(
+        self,
+        initial_task: Task,
+        shared_memory: Optional[SharedWorkflowMemory] = None,
+    ) -> RunResult:
         # Data flow through the pipeline:
         #
         #   initial_task --> agents[0] --> RunResult_0
@@ -125,6 +161,13 @@ class SequentialOrchestrator:
         # If any agent fails, we stop immediately instead of feeding a
         # failed/empty output to the next agent, and that failed RunResult
         # becomes the final result.
+        #
+        # `shared_memory` is the cross-agent blackboard, and it travels
+        # alongside that accumulating transcript rather than replacing it.
+        # The transcript is this pipeline's own chain of prose; the
+        # blackboard holds named deliverables that outlive the pipeline, so
+        # a later workflow can ask for "api_code" by name instead of
+        # re-reading three steps of narrative to find it.
         self.step_results = []
         self.step_tasks = []
 
@@ -136,7 +179,7 @@ class SequentialOrchestrator:
             current_task = self._build_step_task(agent, initial_task, transcript)
             self.step_tasks.append(current_task)
 
-            result = agent.execute(current_task)
+            result = execute_agent(agent, current_task, shared_memory)
             self.step_results.append(result)
 
             if not result.success:
@@ -212,9 +255,7 @@ def create_sequential_pipeline(
         # Real LLM-backed agents. Each gets its own client so per-agent model
         # settings (model, temperature, max_tokens) in the config are honoured.
         registry.register(key, LLMAgent)
-        kwargs = {k: entry[k] for k in AGENT_PARAMS if k in entry}
-        kwargs["llm_client"] = build_llm_client(entry)
-        agent_kwargs[key] = kwargs
+        agent_kwargs[key] = build_agent_kwargs(entry)
 
     return SequentialOrchestrator.from_registry(
         agent_names=agent_keys,

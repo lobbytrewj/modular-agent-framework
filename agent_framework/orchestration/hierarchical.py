@@ -5,12 +5,12 @@ import logging
 import re
 from typing import Iterable, Optional, Sequence, Union
 
-from agent_framework.agents import BaseAgent, LLMAgent
+from agent_framework.agents import BaseAgent, LLMAgent, execute_agent
+from agent_framework.core.memory import SharedWorkflowMemory
 from agent_framework.core.tasks import RunResult, Task
 from agent_framework.orchestration.registry import AgentRegistry
 from agent_framework.orchestration.sequential import (
-    AGENT_PARAMS,
-    build_llm_client,
+    build_agent_kwargs,
     load_agent_config,
 )
 
@@ -385,14 +385,23 @@ class HierarchicalOrchestrator(SubtaskPlanParser):
 
     # --- The run loop ------------------------------------------------------
 
-    def run(self, initial_task: Task) -> RunResult:
+    def run(
+        self,
+        initial_task: Task,
+        shared_memory: Optional[SharedWorkflowMemory] = None,
+    ) -> RunResult:
+        # The blackboard is threaded through all three phases, so the
+        # leader's plan, each specialist's work and the final synthesis
+        # land on one audit trail in the order they actually happened.
         self.step_results = []
         self.plan = []
         self.decomposition_result = None
 
         # Step 1: PLAN. The leader decides who does what.
-        decomposition = self.leader_agent.execute(
-            self._build_decomposition_task(initial_task)
+        decomposition = execute_agent(
+            self.leader_agent,
+            self._build_decomposition_task(initial_task),
+            shared_memory,
         )
         self.decomposition_result = decomposition
         if not decomposition.success:
@@ -415,7 +424,7 @@ class HierarchicalOrchestrator(SubtaskPlanParser):
                 input_data=initial_task.input_data,
             )
             try:
-                result = worker.execute(worker_task)
+                result = execute_agent(worker, worker_task, shared_memory)
             except Exception as exc:  # noqa: BLE001 - one bad specialist isn't fatal
                 result = RunResult(
                     task_id=worker_task.id,
@@ -443,8 +452,10 @@ class HierarchicalOrchestrator(SubtaskPlanParser):
 
         # Steps 3 & 4: AGGREGATE and LOG. The leader's summary is appended last,
         # so step_results reads as [worker, worker, ..., leader].
-        final_result = self.leader_agent.execute(
-            self._build_aggregation_task(initial_task, completed)
+        final_result = execute_agent(
+            self.leader_agent,
+            self._build_aggregation_task(initial_task, completed),
+            shared_memory,
         )
         self.step_results.append(final_result)
         return final_result
@@ -479,9 +490,7 @@ def create_hierarchical_pipeline(
             )
 
         registry.register(key, LLMAgent)
-        kwargs = {param: entry[param] for param in AGENT_PARAMS if param in entry}
-        kwargs["llm_client"] = build_llm_client(entry)
-        agent_kwargs[key] = kwargs
+        agent_kwargs[key] = build_agent_kwargs(entry)
 
     return HierarchicalOrchestrator.from_registry(
         leader_name=leader_key,

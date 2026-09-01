@@ -1,31 +1,3 @@
-"""Live integration test for the auto-routed verifier pipeline.
-
-Runs real local inference through create_routed_verified_pipeline - no mocks -
-so it exercises the two halves together: a router picking a destination from
-the task text, and an outer QA gate deciding whether what came back actually
-answered the request.
-
-Required config/agents.json entry (already applied):
-
-    "verifier": {
-      "name": "VerifierAgent",
-      "role": "quality_assurance",
-      "system_prompt": "You are a quality-assurance verifier ... Reply with
-        ONLY a JSON object: {\"is_complete\": true or false, \"feedback\":
-        \"<what is missing or wrong>\"} ...",
-      "model": "Qwen/Qwen2.5-1.5B-Instruct",
-      "device": "mps",
-      "temperature": 0.1,
-      "max_tokens": 128
-    }
-
-Routing comes from config/router_config.json unchanged: the request below
-contains "python", which matches the "coding" rule and resolves through
-route_agents to the "coder" agent.
-
-Use "device": "cpu" instead of "mps" on a machine without Apple Silicon.
-"""
-
 from __future__ import annotations
 
 import time
@@ -45,9 +17,6 @@ ROUTER_CONFIG = "config/router_config.json"
 VERIFIER_KEY = "verifier"
 MAX_ATTEMPTS = 2
 
-# "Python" is the routing keyword; "memoization" is the requirement the
-# verifier can actually check for. Both matter: one decides where the task
-# goes, the other decides whether it comes back done.
 REQUEST = "Write a Python function to compute the Fibonacci sequence with memoization."
 
 
@@ -92,12 +61,6 @@ def test_real_routed_verifier_pipeline() -> None:
             print("  -> retrying: critique injected, task re-routed from scratch")
         print()
 
-    # --- Required assertions ---------------------------------------------
-
-    # NOTE: like the Goal 9 test, this asserts a QUALITY outcome. It fails if
-    # the verifier never judges the output complete within MAX_ATTEMPTS - the
-    # gate doing its job, not the loop misbehaving. The invariants below hold
-    # either way, so read them first when this line goes red.
     assert result.success is True, (
         f"output was never verified in {len(pipeline.history)} attempt(s). "
         f"Status: {pipeline.status_summary()}. "
@@ -108,7 +71,7 @@ def test_real_routed_verifier_pipeline() -> None:
     assert result.output.strip(), "pipeline returned only whitespace"
     assert len(pipeline.history) >= 1, pipeline.history
 
-    # --- Loop invariants --------------------------------------------------
+    # --- Loop invariants ----
 
     assert pipeline.verified is True
     assert 1 <= pipeline.attempts_used <= MAX_ATTEMPTS
@@ -119,8 +82,6 @@ def test_real_routed_verifier_pipeline() -> None:
         range(1, len(pipeline.history) + 1)
     )
 
-    # Every attempt records a real route and a fully-populated verdict. A route
-    # is either one the router knows about, or the fallback label.
     known_routes = set(pipeline.router.routes) | {"fallback"}
     for entry in pipeline.history:
         assert entry["chosen_route"] in known_routes, entry["chosen_route"]
@@ -130,27 +91,20 @@ def test_real_routed_verifier_pipeline() -> None:
         assert verdict.feedback.strip(), f"attempt {entry['attempt']} had an empty critique"
         assert verdict.raw_response, f"attempt {entry['attempt']} recorded no raw reply"
 
-    # Only the final attempt may pass; had an earlier one passed, run() would
-    # have returned and never routed again.
     for entry in pipeline.history[:-1]:
         assert not entry["verdict"].is_complete, entry["attempt"]
 
-    # The deliverable is the accepted attempt's output verbatim - run() never
-    # rewrites or summarises what the route produced.
     assert result.output == pipeline.history[-1]["workflow_output"]
 
-    # The router logged one decision per attempt, and the pipeline's recorded
-    # routes agree with the router's own log.
     assert len(pipeline.router.routing_log) == pipeline.attempts_used
     assert [record["route"] for record in pipeline.router.routing_log] == [
         entry["chosen_route"] for entry in pipeline.history
     ]
 
-    # step_results accounts for every call: one route + one verify per attempt.
     assert len(pipeline.step_results) == 2 * pipeline.attempts_used
     assert all(step.success for step in pipeline.step_results)
 
-    # --- Summary -----------------------------------------------------------
+    # --- Summary ---
 
     retries = len(pipeline.history) - 1
     print("[termination]")
@@ -160,8 +114,6 @@ def test_real_routed_verifier_pipeline() -> None:
     print(f"  calls:    {len(pipeline.step_results)} agent call(s)")
     print(f"  elapsed:  {elapsed:.2f}s total\n")
 
-    # The assertions above check routing and gate mechanics. They do NOT check
-    # that the Fibonacci code is correct - only that a verifier said it was.
     print("---- Final Verified Output ----")
     print(result.output)
 
