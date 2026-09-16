@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Iterable, Optional, Union
 
 from agent_framework.agents.base import BaseAgent
 from agent_framework.core.llm import LLMClient, LLMError
 from agent_framework.core.memory import AgentMemory, SharedWorkflowMemory
 from agent_framework.core.tasks import RunResult, Task
+from agent_framework.tools.base import ToolPermission
+from agent_framework.tools.registry import ToolRegistry
 
 # How many of an agent's own past turns are replayed by default when it has
 # agent-local memory. Six is three exchanges - enough for a refinement loop to
@@ -26,8 +28,19 @@ class LLMAgent(BaseAgent):
         history_window: Optional[int] = DEFAULT_HISTORY_WINDOW,
         context_keys: Optional[list[str]] = None,
         output_key: Optional[str] = None,
+        tool_registry: Optional[ToolRegistry] = None,
+        allowed_tools: Optional[Iterable[str]] = None,
+        permissions: Optional[Iterable[Union[ToolPermission, str]]] = None,
     ):
-        super().__init__(name, role, system_prompt, memory=memory)
+        super().__init__(
+            name,
+            role,
+            system_prompt,
+            memory=memory,
+            tool_registry=tool_registry,
+            allowed_tools=allowed_tools,
+            permissions=permissions,
+        )
         # Accept an injected client so tests can pass a fake; build a real one otherwise
         self.llm_client = llm_client or LLMClient()
 
@@ -45,6 +58,29 @@ class LLMAgent(BaseAgent):
         # the RunResult, so writing it to shared memory is an explicit choice
         # about what later steps should be able to look up by name.
         self.output_key = output_key
+
+    def _build_system_prompt(self) -> str:
+        """This agent's system prompt, plus a tool block when it has tools.
+
+        The tool list belongs in the system prompt rather than the task: what
+        an agent is allowed to do is a standing fact about the agent, not
+        something that changes per request, and putting it here keeps it out
+        of the agent-local history that gets replayed on every later turn.
+
+        An agent with no authorized tools gets its prompt back untouched, so
+        nothing about a tool-free workflow changes.
+
+        `describe_tools` is server-side filtered: every tool it lists has
+        passed `Tool.is_allowed_for(self.permissions)` in Python before this
+        string is assembled. Tools the agent holds no permission for are not
+        listed as "unavailable" - they are simply absent, so the model is never
+        told they exist. The permissions themselves are never in the prompt,
+        and nothing in `execute` reads them back out of the model's reply.
+        """
+        tool_block = self.describe_tools()
+        if not tool_block:
+            return self.system_prompt
+        return f"{self.system_prompt}\n\n{tool_block}"
 
     def _build_user_message(
         self, task: Task, shared_memory: Optional[SharedWorkflowMemory]
@@ -95,7 +131,7 @@ class LLMAgent(BaseAgent):
 
         try:
             output = self.llm_client.complete(
-                system_prompt=self.system_prompt,
+                system_prompt=self._build_system_prompt(),
                 user_message=user_message,
                 **completion_kwargs,
             )

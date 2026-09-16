@@ -9,6 +9,8 @@ from agent_framework.core.llm import LLMClient
 from agent_framework.core.memory import AgentMemory, SharedWorkflowMemory
 from agent_framework.core.tasks import RunResult, Task
 from agent_framework.orchestration.registry import AgentRegistry
+from agent_framework.tools.base import ToolPermission
+from agent_framework.tools.registry import ToolRegistry, default_registry
 
 # The three fields BaseAgent's constructor takes
 AGENT_PARAMS = ("name", "role", "system_prompt")
@@ -43,8 +45,52 @@ def build_llm_client(entry: dict) -> LLMClient:
 #   "output_key": "name"  where it publishes its own output on the blackboard
 MEMORY_PARAMS = ("history_window", "context_keys", "output_key")
 
+# Tool settings every config entry carries:
+#
+#   "tools": ["calculator"]       which registered tools this agent is assigned
+#   "permissions": ["read_only"]  which permission tiers it holds
+#
+# Both are needed for a tool to actually be usable, and they are separate keys
+# on purpose: assigning `file_write` without granting write is a config that
+# says "this agent should eventually write files" and produces an agent that
+# currently cannot. That reads as an oversight, which is the intent - the
+# alternative, inferring the permission from the tool list, would mean naming a
+# tool silently grants the right to use it.
+#
+# These two keys are the ONLY source of an agent's grants. They are read here,
+# in Python, before the agent exists, and become immutable on the agent. No
+# orchestrator, prompt or model reply can add to them afterwards - an entry
+# that omits them gets an agent holding nothing, never one holding everything.
+TOOL_PARAMS = ("tools", "permissions")
 
-def build_agent_kwargs(entry: dict) -> dict:
+
+def _read_grant(entry: dict, key: str) -> list[str]:
+    """One of TOOL_PARAMS off a config entry, as a list of strings.
+
+    A missing key is an empty grant. Anything else that is not a list of
+    strings is refused outright rather than coerced: the permission model
+    should fail on a malformed config, not quietly widen or narrow around it.
+    """
+    values = entry.get(key, [])
+    if values is None:
+        return []
+    if isinstance(values, str) or not isinstance(values, (list, tuple)):
+        raise TypeError(
+            f"config entry {entry.get('name', '?')!r}: {key!r} must be a list "
+            f"of strings, got {type(values).__name__}"
+        )
+    for value in values:
+        if not isinstance(value, str):
+            raise TypeError(
+                f"config entry {entry.get('name', '?')!r}: {key!r} entries must "
+                f"be strings, got {type(value).__name__}"
+            )
+    return list(values)
+
+
+def build_agent_kwargs(
+    entry: dict, tool_registry: Optional[ToolRegistry] = None
+) -> dict:
     """Turn one config entry into the keyword arguments for an LLMAgent.
 
     Shared by every orchestration factory so a setting added to the config
@@ -54,12 +100,33 @@ def build_agent_kwargs(entry: dict) -> dict:
     Each agent gets a *fresh* AgentMemory when it asks for one: agent-local
     memory is private by definition, so two agents sharing one instance would
     be a bug that shows up as one agent quoting another's turns.
+
+    The tool registry is the opposite case - it is shared deliberately, since
+    every agent in a run should resolve `"file_write"` to the same tool over
+    the same sandbox. `tool_registry` is only consulted for entries that
+    actually declare tools, so a tool-free config never builds one.
     """
     kwargs = {param: entry[param] for param in AGENT_PARAMS if param in entry}
     kwargs.update({param: entry[param] for param in MEMORY_PARAMS if param in entry})
 
     if entry.get("memory"):
         kwargs["memory"] = AgentMemory()
+
+    # Grants come straight off the entry, always, so every agent built from
+    # config carries an explicit (possibly empty) assignment and tier. The
+    # permission strings are validated against the known tiers here, so a
+    # typo in agents.json fails at load time instead of leaving an agent
+    # quietly holding nothing.
+    allowed_tools = _read_grant(entry, "tools")
+    permissions = _read_grant(entry, "permissions")
+    ToolPermission.coerce_set(permissions)
+
+    kwargs["allowed_tools"] = allowed_tools
+    kwargs["permissions"] = permissions
+    if allowed_tools:
+        # The registry is only attached to agents that were assigned
+        # something, so a tool-free config never builds the built-in tools.
+        kwargs["tool_registry"] = tool_registry or default_registry()
 
     kwargs["llm_client"] = build_llm_client(entry)
     return kwargs

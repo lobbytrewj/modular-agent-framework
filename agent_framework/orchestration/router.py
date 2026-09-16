@@ -8,6 +8,7 @@ from typing import Callable, Optional, Protocol, Union, runtime_checkable
 from agent_framework.agents import BaseAgent, LLMAgent, MockAgent, execute_agent
 from agent_framework.core.memory import SharedWorkflowMemory, call_with_shared_memory
 from agent_framework.core.tasks import RunResult, Task
+from agent_framework.observability.tracer import resolve_tracer
 from agent_framework.orchestration.sequential import (
     build_agent_kwargs,
     create_sequential_pipeline,
@@ -103,27 +104,38 @@ class RouterOrchestrator:
 
         Returns _FALLBACK_KEY if nothing matches
         """
+        return self._decide_route_with_reason(task)[0]
+
+    def _decide_route_with_reason(self, task: Task) -> tuple[str, str]:
+        """The route key plus a one-line account of why it was chosen.
+
+        The reason is what makes a routing decision debuggable after the
+        fact: "went to 'coding'" is much less useful than "went to 'coding'
+        because 'python' matched". It is written to the trace and to
+        routing_log; the key alone is what `_decide_route` returns.
+        """
         if self.route_func is not None:
             # Custom decision function is authoritative. If it names a key
             # we don't actually have a destination for, fall back rather than raising.
             key = self.route_func(task)
             if key in self.routes:
-                return key
+                return key, f"route_func chose '{key}'"
             logger.info(
                 "route_func returned unknown key '%s' for task %s; falling back",
                 key,
                 task.id,
             )
-            return self._FALLBACK_KEY
+            return self._FALLBACK_KEY, f"route_func returned unknown key '{key}'"
 
         # Keyword matching: first registered route whose keyword list
         # contains a substring hit in the task description wins.
         description_lower = task.description.lower()
         for key, keywords in self._keywords.items():
-            if any(keyword in description_lower for keyword in keywords):
-                return key
+            matched = [keyword for keyword in keywords if keyword in description_lower]
+            if matched:
+                return key, f"keyword {matched[0]!r} matched"
 
-        return self._FALLBACK_KEY
+        return self._FALLBACK_KEY, "no keyword rule matched"
 
     @staticmethod
     def _execute(
@@ -161,7 +173,7 @@ class RouterOrchestrator:
           3. Log the decision using 'logging` and in `self.routing_log'.
           4. Execute the chosen destination and return its result directly
         """
-        route_key = self._decide_route(task)
+        route_key, reasoning = self._decide_route_with_reason(task)
         used_fallback = route_key == self._FALLBACK_KEY
         destination = self.fallback_destination if used_fallback else self.routes[route_key]
 
@@ -169,6 +181,7 @@ class RouterOrchestrator:
             "task_id": task.id,
             "route": "fallback" if used_fallback else route_key,
             "description": task.description,
+            "reasoning": reasoning,
         }
         self.routing_log.append(decision_record)
         logger.info(
@@ -191,7 +204,35 @@ class RouterOrchestrator:
                 task_id=task.id,
             )
 
+        tracer = resolve_tracer(shared_memory)
+        if tracer is not None:
+            tracer.record_route(
+                "router",
+                decision_record["route"],
+                task.description,
+                reasoning=reasoning,
+                task_id=task.id,
+                destination=_destination_name(destination),
+            )
+            # Handing off to a whole sub-workflow is a delegation in its own
+            # right - the steps it runs will show up under their own agents,
+            # and this event is what ties them back to the routing choice.
+            if not isinstance(destination, BaseAgent):
+                tracer.record_delegation(
+                    "router",
+                    _destination_name(destination),
+                    task,
+                    reason=f"route '{decision_record['route']}' points at a sub-workflow",
+                    workflow="router",
+                )
+
         return self._execute(destination, task, shared_memory)
+
+
+def _destination_name(destination: Destination) -> str:
+    """A label for a route target: the agent's name, or the orchestrator's class."""
+    name = getattr(destination, "name", None)
+    return name if isinstance(name, str) else type(destination).__name__
 
 
 DEFAULT_AGENTS_CONFIG = "config/agents.json"

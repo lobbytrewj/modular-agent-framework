@@ -8,6 +8,7 @@ from typing import Optional
 from agent_framework.agents import BaseAgent, LLMAgent, execute_agent
 from agent_framework.core.memory import SharedWorkflowMemory, call_with_shared_memory
 from agent_framework.core.tasks import RunResult, Task
+from agent_framework.observability.tracer import resolve_tracer
 from agent_framework.orchestration.hierarchical import OBJECT_FIRST, extract_json
 from agent_framework.orchestration.router import (
     DEFAULT_AGENTS_CONFIG,
@@ -244,6 +245,7 @@ class AutoRoutedVerifiedPipeline:
 
         current_task = initial_task
         latest_output = ""
+        tracer = resolve_tracer(shared_memory)
 
         for attempt in range(1, self.max_attempts + 1):
             self.attempts_used = attempt
@@ -306,6 +308,20 @@ class AutoRoutedVerifiedPipeline:
                     "verdict": verdict,
                 }
             )
+            if tracer is not None:
+                # The verdict as the pipeline read it, not just the raw text
+                # the verifier produced: the agent's own AGENT_CALL event
+                # already has the reply, this says what the run made of it.
+                tracer.record_verification(
+                    self.verifier_agent,
+                    is_complete=verdict.is_complete,
+                    feedback=verdict.feedback,
+                    attempt=attempt,
+                    raw_response=verdict.raw_response,
+                    workflow="routed_verified",
+                    chosen_route=chosen_route,
+                    max_attempts=self.max_attempts,
+                )
 
             if verdict.is_complete:
                 self.verified = True
@@ -324,6 +340,16 @@ class AutoRoutedVerifiedPipeline:
             current_task = self._build_retry_task(
                 initial_task, verdict.feedback, latest_output
             )
+            if tracer is not None:
+                tracer.record_delegation(
+                    self.verifier_agent,
+                    "router",
+                    current_task,
+                    reason=f"attempt {attempt} judged incomplete; retrying as attempt {attempt + 1}",
+                    workflow="routed_verified",
+                    attempt=attempt + 1,
+                    feedback=verdict.feedback,
+                )
 
         logger.info("Verification not achieved: %s", self.status_summary())
         return RunResult(

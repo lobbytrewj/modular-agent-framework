@@ -6,7 +6,9 @@
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "hf_device": "cpu",
     "temperature": 0.3,
-    "max_tokens": 512
+    "max_tokens": 512,
+    "tools": [],
+    "permissions": []
   },
   "researcher": {
     "name": "ResearchAgent",
@@ -15,16 +17,29 @@
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "hf_device": "cpu",
     "temperature": 0.3,
-    "max_tokens": 512
+    "max_tokens": 512,
+    "tools": [
+      "search"
+    ],
+    "permissions": [
+      "read_only"
+    ]
   },
   "analyst": {
-    "name": "AnalysisAgent",
+    "name": "AnalystAgent",
     "role": "analysis",
-    "system_prompt": "Analyze the research findings and surface key insights.",
+    "system_prompt": "You are a data analyst with read-only access to a small workspace. Analyze the findings you are given and surface key insights. When you need arithmetic, state the expression to evaluate on a line of its own in the form: calculator(<expression>). Keep your answer under four sentences.",
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "hf_device": "cpu",
     "temperature": 0.3,
-    "max_tokens": 512
+    "max_tokens": 512,
+    "tools": [
+      "calculator",
+      "file_read"
+    ],
+    "permissions": [
+      "read_only"
+    ]
   },
   "writer": {
     "name": "ReportAgent",
@@ -33,7 +48,16 @@
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "hf_device": "cpu",
     "temperature": 0.7,
-    "max_tokens": 128
+    "max_tokens": 128,
+    "tools": [
+      "file_read",
+      "file_list",
+      "file_write"
+    ],
+    "permissions": [
+      "read_only",
+      "write"
+    ]
   },
   "tech_researcher": {
     "name": "TechResearchAgent",
@@ -42,7 +66,9 @@
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "hf_device": "cpu",
     "temperature": 0.1,
-    "max_tokens": 512
+    "max_tokens": 512,
+    "tools": [],
+    "permissions": []
   },
   "market_researcher": {
     "name": "MarketResearchAgent",
@@ -51,7 +77,9 @@
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "hf_device": "cpu",
     "temperature": 0.1,
-    "max_tokens": 512
+    "max_tokens": 512,
+    "tools": [],
+    "permissions": []
   },
   "synthesizer": {
     "name": "SynthesizerAgent",
@@ -60,7 +88,9 @@
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "hf_device": "cpu",
     "temperature": 0.5,
-    "max_tokens": 256
+    "max_tokens": 256,
+    "tools": [],
+    "permissions": []
   },
   "coder": {
     "name": "CodingAgent",
@@ -69,7 +99,27 @@
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "temperature": 0.2,
     "max_tokens": 128,
-    "device": "mps"
+    "device": "mps",
+    "tools": [],
+    "permissions": []
+  },
+  "admin_coder": {
+    "name": "AdminCoderAgent",
+    "role": "admin_coder",
+    "system_prompt": "You are a senior engineer who may write files. Given regional figures, write a short markdown summary: a one-line headline, then one bullet per region. Reply with the markdown only - no commentary, no code fences.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "temperature": 0.2,
+    "max_tokens": 200,
+    "device": "mps",
+    "tools": [
+      "calculator",
+      "file_read",
+      "file_write"
+    ],
+    "permissions": [
+      "read_only",
+      "write"
+    ]
   },
   "math": {
     "name": "MathAgent",
@@ -78,7 +128,13 @@
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "hf_device": "cpu",
     "temperature": 0.0,
-    "max_tokens": 512
+    "max_tokens": 512,
+    "tools": [
+      "calculator"
+    ],
+    "permissions": [
+      "read_only"
+    ]
   },
   "direct_answer": {
     "name": "DirectAnswerAgent",
@@ -87,7 +143,9 @@
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "hf_device": "cpu",
     "temperature": 0.3,
-    "max_tokens": 512
+    "max_tokens": 512,
+    "tools": [],
+    "permissions": []
   },
   "fallback": {
     "name": "FallbackAgent",
@@ -96,7 +154,9 @@
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "hf_device": "cpu",
     "temperature": 0.5,
-    "max_tokens": 512
+    "max_tokens": 512,
+    "tools": [],
+    "permissions": []
   },
   "orchestrator": {
     "name": "OrchestratorAgent",
@@ -105,7 +165,9 @@
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "device": "mps",
     "temperature": 0.2,
-    "max_tokens": 128
+    "max_tokens": 128,
+    "tools": [],
+    "permissions": []
   },
   "reviewer": {
     "name": "ReviewAgent",
@@ -114,7 +176,9 @@
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "device": "mps",
     "temperature": 0.2,
-    "max_tokens": 128
+    "max_tokens": 128,
+    "tools": [],
+    "permissions": []
   },
   "coder_generator": {
     "name": "CoderGeneratorAgent",
@@ -123,7 +187,9 @@
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "device": "mps",
     "temperature": 0.1,
-    "max_tokens": 256
+    "max_tokens": 256,
+    "tools": [],
+    "permissions": []
   },
   "code_evaluator": {
     "name": "CodeEvaluatorAgent",
@@ -132,7 +198,9 @@
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "device": "mps",
     "temperature": 0.1,
-    "max_tokens": 256
+    "max_tokens": 256,
+    "tools": [],
+    "permissions": []
   },
   "verifier": {
     "name": "VerifierAgent",
@@ -141,6 +209,8 @@
     "model": "Qwen/Qwen2.5-1.5B-Instruct",
     "device": "mps",
     "temperature": 0.1,
-    "max_tokens": 128
+    "max_tokens": 128,
+    "tools": [],
+    "permissions": []
   }
 }

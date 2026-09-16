@@ -129,10 +129,18 @@ class SharedWorkflowMemory:
         self,
         artifacts: Optional[dict[str, Any]] = None,
         execution_log: Optional[list[dict]] = None,
+        tracer: Optional[Any] = None,
     ):
         self.artifacts: dict[str, Any] = dict(artifacts or {})
         self.execution_log: list[dict] = list(execution_log or [])
         self._lock = threading.RLock()
+
+        # The run's telemetry collector (an observability.Tracer), if one was
+        # attached. The blackboard is the one object every component of a run
+        # is handed - across orchestrators and across threads - so it is the
+        # natural place for components to find the tracer. Typed loosely so
+        # this module stays free of any dependency on observability.
+        self.tracer: Optional[Any] = tracer
 
     # --- Artifact storage ------------------------------------------------
 
