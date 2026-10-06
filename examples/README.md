@@ -1,4 +1,4 @@
-# End-to-end demos
+# Demos
 
 Three runnable applications built on `agent_framework`. Each one uses a different orchestration pattern:
 
