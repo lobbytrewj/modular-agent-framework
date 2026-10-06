@@ -8,6 +8,8 @@ corpus, so the whole suite is fast and deterministic.
 
 from __future__ import annotations
 
+import importlib
+import os
 import tempfile
 from pathlib import Path
 
@@ -24,6 +26,10 @@ from agent_framework.tools import (
 )
 from agent_framework.tools.builtin import FileSandbox, build_builtin_tools
 from agent_framework.tools.builtin.calculator import calculate
+
+# By module path: the builtin package re-exports a function named `search`,
+# which shadows the submodule as an attribute.
+search_module = importlib.import_module("agent_framework.tools.builtin.search")
 
 READ_ONLY = {ToolPermission.READ_ONLY}
 WRITE = {ToolPermission.WRITE}
@@ -243,6 +249,137 @@ def test_search_is_deterministic_offline_and_pluggable() -> None:
     assert result["output"]["results"][0]["title"] == "live: today"
 
     print("[search] deterministic offline, and swappable for a real backend")
+
+
+def test_web_search_is_registered_alongside_search() -> None:
+    registry = build_default_registry()
+
+    # Both names resolve, both are read-only, and both front the same engine:
+    # `search` answers with a dict, `web_search` with text for a prompt.
+    for name in ("web_search", "search"):
+        tool = registry.get(name)
+        assert tool is not None, name
+        assert tool.required_permission is ToolPermission.READ_ONLY
+    assert "web_search(query: string, max_results: integer (optional))" in (
+        registry.get("web_search").to_prompt_string()
+    )
+
+    found = registry.execute_tool("Scout", "web_search", READ_ONLY, query="tool use function calling")
+    assert found["success"] is True
+    assert isinstance(found["output"], str)
+    assert found["output"].startswith("Search results for 'tool use function calling' (backend: mock)")
+
+    # Argument checking still happens before the tool runs.
+    bad = registry.execute_tool("Scout", "web_search", READ_ONLY, query="x", max_results="5")
+    assert bad["status"] == ToolStatus.INVALID_ARGUMENTS.value
+
+    print("[web_search] registered next to 'search', read-only, text output")
+
+
+def test_read_only_agent_can_call_web_search() -> None:
+    registry = build_default_registry()
+    shared = SharedWorkflowMemory()
+
+    researcher = MockAgent(
+        name="Researcher", role="research", system_prompt="Research.",
+        tool_registry=registry, allowed_tools=["web_search"], permissions=["read_only"],
+    )
+    assert researcher.tool_names() == ["web_search"]
+    called = researcher.use_tool("web_search", shared_memory=shared, query="agent permissions")
+    assert called["success"] is True and called["required_permission"] == "read_only"
+    assert "Sandboxing and permissions for agent tools" in called["output"]
+
+    # Assigned but holding no permission at all: refused before it runs.
+    ungranted = MockAgent(
+        name="Ungranted", role="research", system_prompt="Research.",
+        tool_registry=registry, allowed_tools=["web_search"], permissions=[],
+    )
+    assert ungranted.tool_names() == []
+    refused = ungranted.use_tool("web_search", shared_memory=shared, query="anything")
+    assert refused["status"] == ToolStatus.UNAUTHORIZED.value
+
+    logged = [r for r in shared.execution_log if r.get("tool") == "web_search"]
+    assert [r["status"] for r in logged] == ["ok", "unauthorized"]
+
+    # The config grants it the same way: the researcher reaches it with read_only.
+    config = sequential.load_agent_config("config/agents.json")
+    assert "web_search" in config["researcher"]["tools"]
+    assert config["researcher"]["permissions"] == ["read_only"]
+
+    print("[web_search] a read_only agent can call it; an ungranted one cannot")
+
+
+def test_web_search_offline_and_mock_paths_return_structured_results() -> None:
+    saved_env = os.environ.pop(search_module.SEARCH_BACKEND_ENV, None)
+    saved_providers = list(search_module.LIVE_PROVIDERS)
+    try:
+        # Default: offline corpus, deterministic, title / URL / snippet per hit.
+        first = search_module.web_search("multi-agent systems overview")
+        assert first == search_module.web_search("multi-agent systems overview")
+        lines = first.splitlines()
+        assert lines[0].endswith("(backend: mock)")
+        assert lines[1] == "1. Multi-agent LLM systems: an overview"
+        assert lines[2] == "   URL: https://example.test/multi-agent-overview"
+        assert lines[3].startswith("   Multi-agent systems split a task")
+
+        assert search_module.web_search("zzzz nothing matches").endswith("No results found.")
+
+        # An injected mock responder wins over everything, and its results
+        # come back in the same shape.
+        def mock_responder(query: str, max_results: int) -> list[dict]:
+            return [
+                {"title": f"Result {n} for {query}", "url": f"https://example.test/{n}",
+                 "snippet": f"snippet {n}"}
+                for n in range(1, 10)
+            ]
+
+        mocked = ToolRegistry([search_module.build_web_search_tool(backend=mock_responder)])
+        out = mocked.execute_tool("Scout", "web_search", READ_ONLY, query="q", max_results=2)["output"]
+        assert out.splitlines() == [
+            "Search results for 'q' (backend: mock_responder)",
+            "1. Result 1 for q",
+            "   URL: https://example.test/1",
+            "   snippet 1",
+            "2. Result 2 for q",
+            "   URL: https://example.test/2",
+            "   snippet 2",
+        ]
+
+        # Live mode with no network: every provider fails, and the call falls
+        # back to the offline corpus and says so - no exception, no hang.
+        def offline_provider(query: str, max_results: int) -> list[dict]:
+            raise OSError("network is unreachable")
+
+        os.environ[search_module.SEARCH_BACKEND_ENV] = "live"
+        search_module.LIVE_PROVIDERS[:] = [offline_provider]
+
+        structured = search_module.search("tool use", max_results=2)
+        assert structured["backend"] == "mock"
+        assert "network is unreachable" in structured["fallback_reason"]
+        assert all({"title", "url", "snippet"} <= set(hit) for hit in structured["results"])
+
+        text = build_default_registry().execute_tool(
+            "Scout", "web_search", READ_ONLY, query="tool use"
+        )
+        assert text["success"] is True
+        assert "Note: live search unavailable" in text["output"]
+        assert "1. Tool use and function calling in language models" in text["output"]
+
+        # Live mode with a provider that answers: its results, its name.
+        def fake_live(query: str, max_results: int) -> list[dict]:
+            return [{"title": "Live hit", "url": "https://example.test/live", "snippet": "fresh"}]
+
+        search_module.LIVE_PROVIDERS[:] = [offline_provider, fake_live]
+        live = search_module.search("anything")
+        assert live["backend"] == "fake_live" and live["fallback_reason"] is None
+        assert live["results"][0]["title"] == "Live hit"
+    finally:
+        search_module.LIVE_PROVIDERS[:] = saved_providers
+        os.environ.pop(search_module.SEARCH_BACKEND_ENV, None)
+        if saved_env is not None:
+            os.environ[search_module.SEARCH_BACKEND_ENV] = saved_env
+
+    print("[web_search] offline and mocked calls return title/URL/snippet cleanly")
 
 
 def test_argument_schema_is_enforced_before_the_tool_runs() -> None:
@@ -575,7 +712,7 @@ def test_agent_permissions_are_immutable_after_construction() -> None:
     assert not hasattr(analyst.permissions, "update")
 
     # And the tools it is offered are derived from those grants alone.
-    assert analyst.tool_names() == ["calculator", "file_read"]
+    assert analyst.tool_names() == ["calculator", "file_read", "web_search"]
     assert admin.tool_names() == ["calculator", "file_read", "file_write"]
 
     print("[agents] permissions are a frozenset with no setter, fixed from config")
@@ -619,7 +756,7 @@ def test_llm_text_cannot_alter_permissions_or_reach_tools() -> None:
         # ...and changed nothing. Same object, same contents, same tool offer.
         assert analyst.permissions is before
         assert analyst.permissions == frozenset({ToolPermission.READ_ONLY})
-        assert analyst.tool_names() == ["calculator", "file_read"]
+        assert analyst.tool_names() == ["calculator", "file_read", "web_search"]
 
         # The prompt the model was sent never mentioned the write tool or the tiers.
         prompt = client.calls[-1]["system_prompt"]
@@ -667,6 +804,9 @@ TESTS = (
     test_file_tools_round_trip_inside_the_sandbox,
     test_sandbox_refuses_paths_that_escape_the_root,
     test_search_is_deterministic_offline_and_pluggable,
+    test_web_search_is_registered_alongside_search,
+    test_read_only_agent_can_call_web_search,
+    test_web_search_offline_and_mock_paths_return_structured_results,
     test_argument_schema_is_enforced_before_the_tool_runs,
     test_write_permission_is_required_for_file_write,
     test_every_tool_attempt_is_logged_to_shared_memory,

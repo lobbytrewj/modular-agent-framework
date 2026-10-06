@@ -19,7 +19,8 @@
     "temperature": 0.3,
     "max_tokens": 512,
     "tools": [
-      "search"
+      "search",
+      "web_search"
     ],
     "permissions": [
       "read_only"
@@ -35,7 +36,8 @@
     "max_tokens": 512,
     "tools": [
       "calculator",
-      "file_read"
+      "file_read",
+      "web_search"
     ],
     "permissions": [
       "read_only"
@@ -210,6 +212,113 @@
     "device": "mps",
     "temperature": 0.1,
     "max_tokens": 128,
+    "tools": [],
+    "permissions": []
+  },
+  "research_planner": {
+    "name": "ResearchPlannerAgent",
+    "role": "research_planning",
+    "system_prompt": "You are a research lead. Break a broad research question into distinct, non-overlapping subtopics that together cover it. Reply with ONLY a JSON array of short subtopic strings, for example: [\"subtopic one\", \"subtopic two\", \"subtopic three\"]. No prose, no numbering, no markdown fences.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "temperature": 0.2,
+    "max_tokens": 128,
+    "context_keys": [],
+    "tools": [],
+    "permissions": []
+  },
+  "research_synthesizer": {
+    "name": "ResearchSynthesizerAgent",
+    "role": "research_synthesis",
+    "system_prompt": "You are a research editor. Combine findings from several researchers into one structured markdown report with exactly these sections: ## Overview, ## Key Findings (one bullet per subtopic), ## Open Questions, ## Sources. Keep every specific fact and cite source titles in brackets. Do not invent facts the findings do not contain.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "temperature": 0.3,
+    "max_tokens": 512,
+    "context_keys": [],
+    "output_key": "research_report",
+    "tools": [],
+    "permissions": []
+  },
+  "research_evaluator": {
+    "name": "ResearchEvaluatorAgent",
+    "role": "research_evaluation",
+    "system_prompt": "You are a research reviewer. Check a report against the original research question: does it answer every part, use the required sections, and stay grounded in the cited sources?\nReply with ONLY a JSON object and nothing else, in exactly this form:\n{\"is_complete\": true or false, \"feedback\": \"<the specific gaps to fix>\"}\nSet is_complete to true only when the report fully answers the question. Do not include markdown fences or any text outside the JSON object.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "temperature": 0.1,
+    "max_tokens": 160,
+    "context_keys": [],
+    "tools": [],
+    "permissions": []
+  },
+  "code_planner": {
+    "name": "CodePlannerAgent",
+    "role": "planning",
+    "system_prompt": "You are a software architect. Before any code is written, outline how to implement the requested function: its exact signature, the algorithm in a few steps, and a bullet list of edge cases and invalid inputs it must handle. Be brief and concrete. Do not write the implementation.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "temperature": 0.2,
+    "max_tokens": 256,
+    "context_keys": [],
+    "output_key": "design_plan",
+    "tools": [],
+    "permissions": []
+  },
+  "team_coder": {
+    "name": "TeamCoderAgent",
+    "role": "coding",
+    "system_prompt": "You are a Python developer. Implement exactly the function requested, following the design plan you are given. Handle every listed edge case explicitly. Reply with ONLY one ```python code block containing imports and the function definition - no tests, no example calls, no self-checks and no other top-level statements. On a revision, fix every problem you are told about and return the complete corrected code.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "temperature": 0.1,
+    "max_tokens": 512,
+    "context_keys": [
+      "design_plan"
+    ],
+    "output_key": "code_draft",
+    "tools": [],
+    "permissions": []
+  },
+  "test_writer": {
+    "name": "TestAgent",
+    "role": "testing",
+    "system_prompt": "You are a test engineer. Write at most 6 plain-Python unit tests for the requested function: one `def test_<name>():` function per behaviour, using bare `assert` statements. Cover normal cases and the edge cases in the design plan, and make sure every expected value is correct. To check an exception use `with pytest.raises(<Error>):`. `math` and `pytest` are already imported and the function under test is already importable: do not import or redefine it. Reply with ONLY one ```python code block.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "temperature": 0.1,
+    "max_tokens": 512,
+    "context_keys": [
+      "design_plan",
+      "code_draft"
+    ],
+    "tools": [
+      "python_test_runner"
+    ],
+    "permissions": [
+      "read_only",
+      "write"
+    ]
+  },
+  "code_releaser": {
+    "name": "ReleaseAgent",
+    "role": "release",
+    "system_prompt": "You publish code that has passed review and its tests to the project workspace. You never modify the code you are given.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "temperature": 0.0,
+    "max_tokens": 64,
+    "tools": [
+      "file_read",
+      "file_list",
+      "file_write"
+    ],
+    "permissions": [
+      "read_only",
+      "write"
+    ]
+  },
+  "request_router": {
+    "name": "RouterAgent",
+    "role": "routing",
+    "system_prompt": "You are a request dispatcher. Given a user request and a list of routes, choose the single route best suited to handle it.\nReply with ONLY a JSON object and nothing else, in exactly this form:\n{\"route\": \"<route key>\", \"reasoning\": \"<one short sentence explaining the choice>\"}\nUse only the route keys you are given, or \"other\" when none fits.",
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "temperature": 0.0,
+    "max_tokens": 96,
+    "context_keys": [],
     "tools": [],
     "permissions": []
   }

@@ -133,85 +133,7 @@ class AutoRoutedVerifiedPipeline:
 
     def _parse_verdict(self, text: str) -> VerificationVerdict:
         """Turn the verifier's reply into a verdict. Always returns one."""
-        text = text or ""
-        payload = extract_json(text, OBJECT_FIRST)
-
-        is_complete: Optional[bool] = None
-        feedback = ""
-        verdict_parsed = isinstance(payload, dict)
-
-        # --- Tier 1: a real JSON object, which is what we asked for ---
-        if isinstance(payload, dict):
-            for wrapper in ("verdict", "result", "verification", "evaluation"):
-                inner = payload.get(wrapper)
-                if isinstance(inner, dict):
-                    payload = inner
-                    break
-
-            for key in _COMPLETE_FIELDS:
-                if key in payload:
-                    is_complete = self._coerce_bool(payload[key])
-                    if is_complete is not None:
-                        break
-            for key in _FEEDBACK_FIELDS:
-                value = payload.get(key)
-                if isinstance(value, str) and value.strip():
-                    feedback = value.strip()
-                    break
-                if isinstance(value, list) and value:
-                    joined = "\n".join(f"- {item}" for item in value if str(item).strip())
-                    if joined:
-                        feedback = joined
-                        break
-
-        # --- Tier 2: regex over the prose ---
-        if is_complete is None:
-            assignment = re.search(
-                r'["\']?\b(?:is_complete|complete|completed|passed|satisfied|done)\b'
-                r'["\']?\s*[:=]\s*["\']?(\w+)',
-                text,
-                re.IGNORECASE,
-            )
-            if assignment:
-                is_complete = self._coerce_bool(assignment.group(1))
-
-            if is_complete is None:
-                # Negations are checked first
-                if re.search(
-                    r"\b(?:in|not )complete\b|\bincomplete\b|\bmissing\b|\bfail(?:ed|s)?\b",
-                    text,
-                    re.IGNORECASE,
-                ):
-                    is_complete = False
-                elif re.search(
-                    r'\b(?:complete|satisfied|correct)\b(?!\s*["\']?\s*[:=])',
-                    text,
-                    re.IGNORECASE,
-                ):
-                    is_complete = True
-
-        if not feedback:
-            match = re.search(r'"?feedback"?\s*[:=]\s*"([^"]+)"', text, re.IGNORECASE)
-            if match:
-                feedback = match.group(1).strip()
-            elif not verdict_parsed:
-                feedback = text.strip()
-            else:
-                feedback = NO_FEEDBACK
-
-        if is_complete is None:
-            logger.warning(
-                "Could not read a verdict from the verifier; treating the output "
-                "as unverified. Raw reply: %.120s",
-                text.replace("\n", " "),
-            )
-            is_complete = False
-
-        return VerificationVerdict(
-            is_complete=is_complete,
-            feedback=feedback,
-            raw_response=text,
-        )
+        return parse_verification_verdict(text)
 
     # --- Status ---
 
@@ -358,6 +280,94 @@ class AutoRoutedVerifiedPipeline:
             output=latest_output,
             error=self.status_summary(),
         )
+
+
+def parse_verification_verdict(text: str) -> VerificationVerdict:
+    """Read a verifier reply of the form {"is_complete": ..., "feedback": ...}.
+
+    Module-level so any workflow that asks an agent for a completeness
+    verdict can read the reply the same forgiving way this pipeline does.
+    Always returns a verdict; an unreadable reply counts as incomplete.
+    """
+    text = text or ""
+    payload = extract_json(text, OBJECT_FIRST)
+
+    is_complete: Optional[bool] = None
+    feedback = ""
+    verdict_parsed = isinstance(payload, dict)
+
+    # --- Tier 1: a real JSON object, which is what we asked for ---
+    if isinstance(payload, dict):
+        for wrapper in ("verdict", "result", "verification", "evaluation"):
+            inner = payload.get(wrapper)
+            if isinstance(inner, dict):
+                payload = inner
+                break
+
+        for key in _COMPLETE_FIELDS:
+            if key in payload:
+                is_complete = AutoRoutedVerifiedPipeline._coerce_bool(payload[key])
+                if is_complete is not None:
+                    break
+        for key in _FEEDBACK_FIELDS:
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                feedback = value.strip()
+                break
+            if isinstance(value, list) and value:
+                joined = "\n".join(f"- {item}" for item in value if str(item).strip())
+                if joined:
+                    feedback = joined
+                    break
+
+    # --- Tier 2: regex over the prose ---
+    if is_complete is None:
+        assignment = re.search(
+            r'["\']?\b(?:is_complete|complete|completed|passed|satisfied|done)\b'
+            r'["\']?\s*[:=]\s*["\']?(\w+)',
+            text,
+            re.IGNORECASE,
+        )
+        if assignment:
+            is_complete = AutoRoutedVerifiedPipeline._coerce_bool(assignment.group(1))
+
+        if is_complete is None:
+            # Negations are checked first
+            if re.search(
+                r"\b(?:in|not )complete\b|\bincomplete\b|\bmissing\b|\bfail(?:ed|s)?\b",
+                text,
+                re.IGNORECASE,
+            ):
+                is_complete = False
+            elif re.search(
+                r'\b(?:complete|satisfied|correct)\b(?!\s*["\']?\s*[:=])',
+                text,
+                re.IGNORECASE,
+            ):
+                is_complete = True
+
+    if not feedback:
+        match = re.search(r'"?feedback"?\s*[:=]\s*"([^"]+)"', text, re.IGNORECASE)
+        if match:
+            feedback = match.group(1).strip()
+        elif not verdict_parsed:
+            feedback = text.strip()
+        else:
+            feedback = NO_FEEDBACK
+
+    if is_complete is None:
+        logger.warning(
+            "Could not read a verdict from the verifier; treating the output "
+            "as unverified. Raw reply: %.120s",
+            text.replace("\n", " "),
+        )
+        is_complete = False
+
+    return VerificationVerdict(
+        is_complete=is_complete,
+        feedback=feedback,
+        raw_response=text,
+    )
 
 
 def create_routed_verified_pipeline(

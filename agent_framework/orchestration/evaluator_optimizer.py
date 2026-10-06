@@ -8,6 +8,7 @@ from typing import Optional
 from agent_framework.agents import BaseAgent, LLMAgent, execute_agent
 from agent_framework.core.memory import SharedWorkflowMemory
 from agent_framework.core.tasks import RunResult, Task
+from agent_framework.observability.tracer import resolve_tracer
 from agent_framework.orchestration.hierarchical import OBJECT_FIRST, extract_json
 from agent_framework.orchestration.registry import AgentRegistry
 from agent_framework.orchestration.sequential import (
@@ -420,6 +421,8 @@ class EvaluatorOptimizerPipeline:
         self.passed_threshold = False
         self.best_step = None
 
+        tracer = resolve_tracer(shared_memory)
+
         generation = execute_agent(self.generator_agent, initial_task, shared_memory)
         self.step_results.append(generation)
         if not generation.success:
@@ -453,8 +456,23 @@ class EvaluatorOptimizerPipeline:
 
             evaluation = self._parse_evaluation(evaluation_result.output or "")
             step = self._record(round_number, draft, evaluation)
+            accepted = evaluation.passed or evaluation.score >= self.min_pass_score
+            if tracer is not None:
+                # The grade as the loop read it; the evaluator's own AGENT_CALL
+                # event already carries the raw reply.
+                tracer.record_verification(
+                    self.evaluator_agent,
+                    is_complete=accepted,
+                    feedback=evaluation.feedback,
+                    attempt=round_number,
+                    raw_response=evaluation.raw_response,
+                    workflow="evaluator_optimizer",
+                    score=evaluation.score,
+                    threshold=self.min_pass_score,
+                    max_retries=self.max_retries,
+                )
 
-            if evaluation.passed or evaluation.score >= self.min_pass_score:
+            if accepted:
                 self.passed_threshold = True
                 self.best_step = step
                 logger.info(
@@ -469,11 +487,21 @@ class EvaluatorOptimizerPipeline:
             if round_number == self.max_retries:
                 break
 
-            refinement = execute_agent(
-                self.generator_agent,
-                self._build_refinement_task(draft, evaluation.feedback, initial_task),
-                shared_memory,
-            )
+            refinement_task = self._build_refinement_task(draft, evaluation.feedback, initial_task)
+            if tracer is not None:
+                tracer.record_delegation(
+                    self.evaluator_agent,
+                    self.generator_agent,
+                    refinement_task,
+                    reason=(
+                        f"round {round_number} scored {evaluation.score:g} "
+                        f"(threshold {self.min_pass_score:g}); sending feedback back"
+                    ),
+                    workflow="evaluator_optimizer",
+                    attempt=round_number + 1,
+                    feedback=evaluation.feedback,
+                )
+            refinement = execute_agent(self.generator_agent, refinement_task, shared_memory)
             self.step_results.append(refinement)
 
             if not refinement.success:

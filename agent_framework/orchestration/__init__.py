@@ -22,6 +22,7 @@ from agent_framework.orchestration.routed_verified_pipeline import (
     AutoRoutedVerifiedPipeline,
     VerificationVerdict,
     create_routed_verified_pipeline,
+    parse_verification_verdict,
 )
 
 __all__ = [
@@ -38,4 +39,5 @@ __all__ = [
     "create_orchestrator_worker_pipeline",
     "create_parallel_pipeline",
     "create_routed_verified_pipeline",
+    "parse_verification_verdict",
 ]

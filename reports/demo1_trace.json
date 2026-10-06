@@ -1,0 +1,366 @@
+{
+  "run_id": "c420575b8df2",
+  "start_time": 1790697608.666097,
+  "end_time": 1790697608.6702,
+  "metadata": {
+    "workflow": "research_swarm",
+    "question": "How do multi-agent LLM systems stay reliable? Cover how they use tools, how tool permissions are sandboxed, and how agent workflows are evaluated.",
+    "mock": true
+  },
+  "events": [
+    {
+      "event_id": "c420575b8df2-0001",
+      "timestamp": 1790697608.667268,
+      "event_type": "agent_call",
+      "workflow": null,
+      "agent_name": "ResearchPlannerAgent",
+      "duration": 0.00010495799999998834,
+      "data": {
+        "role": "research_planning",
+        "task_id": "daebd34d-5f21-44d4-8b13-bbb84a9b016b",
+        "task": "Research question:\nHow do multi-agent LLM systems stay reliable? Cover how they use tools, how tool permissions are sandboxed, and how agent workflows are evaluated.\n\nSplit it into at most 3 distinct subtopics. Reply with ONLY a JSON array of short subtopic strings.",
+        "input_data": {},
+        "output": "[\"Tool use and function calling\", \"Sandboxing and permissions for agent tools\", \"Evaluating agent workflows\"]",
+        "success": true,
+        "error": null
+      }
+    },
+    {
+      "event_id": "c420575b8df2-0002",
+      "timestamp": 1790697608.66875,
+      "event_type": "delegation",
+      "workflow": "research_swarm",
+      "agent_name": "ResearchPlannerAgent",
+      "duration": null,
+      "data": {
+        "from": "ResearchPlannerAgent",
+        "to": "ResearchAgent-1",
+        "task_id": null,
+        "task": "Tool use and function calling",
+        "reason": "subtopic assignment"
+      }
+    },
+    {
+      "event_id": "c420575b8df2-0003",
+      "timestamp": 1790697608.668771,
+      "event_type": "delegation",
+      "workflow": "research_swarm",
+      "agent_name": "ResearchPlannerAgent",
+      "duration": null,
+      "data": {
+        "from": "ResearchPlannerAgent",
+        "to": "ResearchAgent-2",
+        "task_id": null,
+        "task": "Sandboxing and permissions for agent tools",
+        "reason": "subtopic assignment"
+      }
+    },
+    {
+      "event_id": "c420575b8df2-0004",
+      "timestamp": 1790697608.6687858,
+      "event_type": "delegation",
+      "workflow": "research_swarm",
+      "agent_name": "ResearchPlannerAgent",
+      "duration": null,
+      "data": {
+        "from": "ResearchPlannerAgent",
+        "to": "ResearchAgent-3",
+        "task_id": null,
+        "task": "Evaluating agent workflows",
+        "reason": "subtopic assignment"
+      }
+    },
+    {
+      "event_id": "c420575b8df2-0005",
+      "timestamp": 1790697608.6691918,
+      "event_type": "tool_call",
+      "workflow": null,
+      "agent_name": "ResearchAgent-1",
+      "duration": 7.654199999998501e-05,
+      "data": {
+        "tool": "search",
+        "arguments": {
+          "query": "Tool use and function calling",
+          "max_results": 3
+        },
+        "status": "ok",
+        "success": true,
+        "output": {
+          "query": "Tool use and function calling",
+          "backend": "mock",
+          "result_count": 2,
+          "results": [
+            {
+              "title": "Tool use and function calling in language models",
+              "url": "https://example.test/tool-use",
+              "snippet": "Models call external tools by emitting a structured call against a declared schema; the runtime validates the arguments, executes the tool and feeds the result back into the conversation.",
+              "score": 9,
+              "source": "mock"
+            },
+            {
+              "title": "Sandboxing and permissions for agent tools",
+              "url": "https://example.test/agent-permissions",
+              "snippet": "Least privilege applies to agents as much as to processes: grant read-only access by default and require an explicit write permission before a tool may modify files.",
+              "score": 1,
+              "source": "mock"
+            }
+          ]
+        },
+        "error": null,
+        "required_permission": "read_only"
+      }
+    },
+    {
+      "event_id": "c420575b8df2-0006",
+      "timestamp": 1790697608.6693912,
+      "event_type": "agent_call",
+      "workflow": null,
+      "agent_name": "ResearchAgent-1",
+      "duration": 0.0003340420000000066,
+      "data": {
+        "role": "research",
+        "task_id": "2432b49c-b349-4fec-bbd1-f95b60521a53",
+        "task": "How do multi-agent LLM systems stay reliable? Cover how they use tools, how tool permissions are sandboxed, and how agent workflows are evaluated.",
+        "input_data": {},
+        "output": "- Tool use and function calling is a core reliability lever for multi-agent systems [Tool use and function calling in language models].\n- Practitioners pair it with explicit checks rather than trusting model output [Tool use and function calling in language models].",
+        "success": true,
+        "error": null
+      }
+    },
+    {
+      "event_id": "c420575b8df2-0007",
+      "timestamp": 1790697608.66952,
+      "event_type": "tool_call",
+      "workflow": null,
+      "agent_name": "ResearchAgent-2",
+      "duration": 6.387500000001878e-05,
+      "data": {
+        "tool": "search",
+        "arguments": {
+          "query": "Sandboxing and permissions for agent tools",
+          "max_results": 3
+        },
+        "status": "ok",
+        "success": true,
+        "output": {
+          "query": "Sandboxing and permissions for agent tools",
+          "backend": "mock",
+          "result_count": 3,
+          "results": [
+            {
+              "title": "Sandboxing and permissions for agent tools",
+              "url": "https://example.test/agent-permissions",
+              "snippet": "Least privilege applies to agents as much as to processes: grant read-only access by default and require an explicit write permission before a tool may modify files.",
+              "score": 8,
+              "source": "mock"
+            },
+            {
+              "title": "Multi-agent LLM systems: an overview",
+              "url": "https://example.test/multi-agent-overview",
+              "snippet": "Multi-agent systems split a task across specialised LLM agents - a router picks the handler, workers run in parallel, and an orchestrator merges the results.",
+              "score": 3,
+              "source": "mock"
+            },
+            {
+              "title": "Evaluating agent workflows",
+              "url": "https://example.test/evaluating-agents",
+              "snippet": "Evaluator-optimizer loops score a draft against a rubric and feed the critique back to the generator until it passes a threshold.",
+              "score": 2,
+              "source": "mock"
+            }
+          ]
+        },
+        "error": null,
+        "required_permission": "read_only"
+      }
+    },
+    {
+      "event_id": "c420575b8df2-0008",
+      "timestamp": 1790697608.669651,
+      "event_type": "tool_call",
+      "workflow": null,
+      "agent_name": "ResearchAgent-3",
+      "duration": 6.94169999999883e-05,
+      "data": {
+        "tool": "search",
+        "arguments": {
+          "query": "Evaluating agent workflows",
+          "max_results": 3
+        },
+        "status": "ok",
+        "success": true,
+        "output": {
+          "query": "Evaluating agent workflows",
+          "backend": "mock",
+          "result_count": 3,
+          "results": [
+            {
+              "title": "Evaluating agent workflows",
+              "url": "https://example.test/evaluating-agents",
+              "snippet": "Evaluator-optimizer loops score a draft against a rubric and feed the critique back to the generator until it passes a threshold.",
+              "score": 6,
+              "source": "mock"
+            },
+            {
+              "title": "Multi-agent LLM systems: an overview",
+              "url": "https://example.test/multi-agent-overview",
+              "snippet": "Multi-agent systems split a task across specialised LLM agents - a router picks the handler, workers run in parallel, and an orchestrator merges the results.",
+              "score": 3,
+              "source": "mock"
+            },
+            {
+              "title": "Sandboxing and permissions for agent tools",
+              "url": "https://example.test/agent-permissions",
+              "snippet": "Least privilege applies to agents as much as to processes: grant read-only access by default and require an explicit write permission before a tool may modify files.",
+              "score": 2,
+              "source": "mock"
+            }
+          ]
+        },
+        "error": null,
+        "required_permission": "read_only"
+      }
+    },
+    {
+      "event_id": "c420575b8df2-0009",
+      "timestamp": 1790697608.6697311,
+      "event_type": "agent_call",
+      "workflow": null,
+      "agent_name": "ResearchAgent-2",
+      "duration": 0.000300875000000006,
+      "data": {
+        "role": "research",
+        "task_id": "f3427802-eac2-4f42-8e7b-b0f4cb26944c",
+        "task": "How do multi-agent LLM systems stay reliable? Cover how they use tools, how tool permissions are sandboxed, and how agent workflows are evaluated.",
+        "input_data": {},
+        "output": "- Sandboxing and permissions for agent tools is a core reliability lever for multi-agent systems [Sandboxing and permissions for agent tools].\n- Practitioners pair it with explicit checks rather than trusting model output [Sandboxing and permissions for agent tools].",
+        "success": true,
+        "error": null
+      }
+    },
+    {
+      "event_id": "c420575b8df2-0010",
+      "timestamp": 1790697608.669794,
+      "event_type": "agent_call",
+      "workflow": null,
+      "agent_name": "ResearchAgent-3",
+      "duration": 0.00024354099999998602,
+      "data": {
+        "role": "research",
+        "task_id": "cb438cdd-ebdd-4b47-9f48-390d487acd95",
+        "task": "How do multi-agent LLM systems stay reliable? Cover how they use tools, how tool permissions are sandboxed, and how agent workflows are evaluated.",
+        "input_data": {},
+        "output": "- Evaluating agent workflows is a core reliability lever for multi-agent systems [Evaluating agent workflows].\n- Practitioners pair it with explicit checks rather than trusting model output [Evaluating agent workflows].",
+        "success": true,
+        "error": null
+      }
+    },
+    {
+      "event_id": "c420575b8df2-0011",
+      "timestamp": 1790697608.6699798,
+      "event_type": "agent_call",
+      "workflow": null,
+      "agent_name": "ResearchSynthesizerAgent",
+      "duration": 9.437500000000765e-05,
+      "data": {
+        "role": "research_synthesis",
+        "task_id": "eafca8ec-14de-4ca6-8b4f-000ba6786c53",
+        "task": "Original Request:\nHow do multi-agent LLM systems stay reliable? Cover how they use tools, how tool permissions are sandboxed, and how agent workflows are evaluated.\n\nWorker Findings:\n--- Worker 1 (ResearchAgent-1) ---\n- Tool use and function calling is a core reliability lever for multi-agent systems [Tool use and function calling in language models].\n- Practitioners pair it with explicit checks rather than trusting model output [Tool use and function calling in language models].\n\n--- Worker 2 (ResearchAgent-2) ---\n- Sandboxing and permissions for agent tools is a core reliability lever for multi-agent systems [Sandboxing and permissions for agent tools].\n- Practitioners pair it with explicit checks rather than trusting model output [Sandboxing and permissions for agent tools].\n\n--- Worker 3 (ResearchAgent-3) ---\n- Evaluating agent workflows is a core reliability lever for multi-agent systems [Evaluating agent workflows].\n- Practitioners pair it with explicit checks rather than trusting model output [Evaluating agent workflows].",
+        "input_data": {},
+        "output": "## Overview\nMulti-agent systems stay reliable by constraining tools, sandboxing permissions and evaluating outputs.\n\n## Key Findings\n- Tool use and function calling: a core reliability lever.\n- Sandboxing and permissions for agent tools: a core reliability lever.\n- Evaluating agent workflows: a core reliability lever.\n\n## Open Questions\n- How well do these controls hold up with smaller models?\n\n## Sources\n- [Tool use and function calling in language models]\n- [Sandboxing and permissions for agent tools]\n- [Evaluating agent workflows]",
+        "success": true,
+        "error": null
+      }
+    },
+    {
+      "event_id": "c420575b8df2-0012",
+      "timestamp": 1790697608.670039,
+      "event_type": "agent_call",
+      "workflow": null,
+      "agent_name": "ResearchEvaluatorAgent",
+      "duration": 6.124999999995717e-06,
+      "data": {
+        "role": "research_evaluation",
+        "task_id": "8f388b4e-67d2-48ed-823d-60e32bdabd4a",
+        "task": "Original research question:\nHow do multi-agent LLM systems stay reliable? Cover how they use tools, how tool permissions are sandboxed, and how agent workflows are evaluated.\n\nReport to review:\n## Overview\nMulti-agent systems stay reliable by constraining tools, sandboxing permissions and evaluating outputs.\n\n## Key Findings\n- Tool use and function calling: a core reliability lever.\n- Sandboxing and permissions for agent tools: a core reliability lever.\n- Evaluating agent workflows: a core reliability lever.\n\n## Open Questions\n- How well do these controls hold up with smaller models?\n\n## Sources\n- [Tool use and function calling in language models]\n- [Sandboxing and permissions for agent tools]\n- [Evaluating agent workflows]\n\nDoes the report answer every part of the question, use the sections Overview, Key Findings, Open Questions and Sources, and stay grounded in its cited sources?\n\nReply with ONLY a JSON object: {\"is_complete\": <true or false>, \"feedback\": \"<the specific gaps to fix>\"}",
+        "input_data": {},
+        "output": "{\"is_complete\": true, \"feedback\": \"\"}",
+        "success": true,
+        "error": null
+      }
+    },
+    {
+      "event_id": "c420575b8df2-0013",
+      "timestamp": 1790697608.670155,
+      "event_type": "verification",
+      "workflow": "research_swarm",
+      "agent_name": "ResearchEvaluatorAgent",
+      "duration": null,
+      "data": {
+        "attempt": 1,
+        "is_complete": true,
+        "feedback": "(the verifier gave no specific feedback)",
+        "raw_response": "{\"is_complete\": true, \"feedback\": \"\"}"
+      }
+    },
+    {
+      "event_id": "c420575b8df2-0014",
+      "timestamp": 1790697608.670197,
+      "event_type": "state_snapshot",
+      "workflow": null,
+      "agent_name": null,
+      "duration": null,
+      "data": {
+        "label": "final",
+        "artifact_keys": [
+          "subtopics",
+          "findings/1",
+          "findings/2",
+          "findings/3",
+          "research_report",
+          "research_evaluation"
+        ],
+        "artifacts": {
+          "subtopics": [
+            "Tool use and function calling",
+            "Sandboxing and permissions for agent tools",
+            "Evaluating agent workflows"
+          ],
+          "findings/1": {
+            "subtopic": "Tool use and function calling",
+            "sources": [
+              "Tool use and function calling in language models",
+              "Sandboxing and permissions for agent tools"
+            ],
+            "findings": "- Tool use and function calling is a core reliability lever for multi-agent systems [Tool use and function calling in language models].\n- Practitioners pair it with explicit checks rather than trusting model output [Tool use and function calling in language models]."
+          },
+          "findings/2": {
+            "subtopic": "Sandboxing and permissions for agent tools",
+            "sources": [
+              "Sandboxing and permissions for agent tools",
+              "Multi-agent LLM systems: an overview",
+              "Evaluating agent workflows"
+            ],
+            "findings": "- Sandboxing and permissions for agent tools is a core reliability lever for multi-agent systems [Sandboxing and permissions for agent tools].\n- Practitioners pair it with explicit checks rather than trusting model output [Sandboxing and permissions for agent tools]."
+          },
+          "findings/3": {
+            "subtopic": "Evaluating agent workflows",
+            "sources": [
+              "Evaluating agent workflows",
+              "Multi-agent LLM systems: an overview",
+              "Sandboxing and permissions for agent tools"
+            ],
+            "findings": "- Evaluating agent workflows is a core reliability lever for multi-agent systems [Evaluating agent workflows].\n- Practitioners pair it with explicit checks rather than trusting model output [Evaluating agent workflows]."
+          },
+          "research_report": "## Overview\nMulti-agent systems stay reliable by constraining tools, sandboxing permissions and evaluating outputs.\n\n## Key Findings\n- Tool use and function calling: a core reliability lever.\n- Sandboxing and permissions for agent tools: a core reliability lever.\n- Evaluating agent workflows: a core reliability lever.\n\n## Open Questions\n- How well do these controls hold up with smaller models?\n\n## Sources\n- [Tool use and function calling in language models]\n- [Sandboxing and permissions for agent tools]\n- [Evaluating agent workflows]",
+          "research_evaluation": {
+            "is_complete": true,
+            "feedback": "(the verifier gave no specific feedback)",
+            "attempts": 1
+          }
+        },
+        "execution_log_length": 9
+      }
+    }
+  ]
+}

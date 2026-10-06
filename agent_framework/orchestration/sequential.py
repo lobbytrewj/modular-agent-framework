@@ -89,7 +89,9 @@ def _read_grant(entry: dict, key: str) -> list[str]:
 
 
 def build_agent_kwargs(
-    entry: dict, tool_registry: Optional[ToolRegistry] = None
+    entry: dict,
+    tool_registry: Optional[ToolRegistry] = None,
+    llm_client: Optional[LLMClient] = None,
 ) -> dict:
     """Turn one config entry into the keyword arguments for an LLMAgent.
 
@@ -105,6 +107,12 @@ def build_agent_kwargs(
     every agent in a run should resolve `"file_write"` to the same tool over
     the same sandbox. `tool_registry` is only consulted for entries that
     actually declare tools, so a tool-free config never builds one.
+
+    `llm_client` replaces the client the entry's model settings would build.
+    Everything else - name, prompt, memory settings and, above all, the
+    grants - still comes from the entry, which is what lets a demo or a test
+    run a config-defined agent against a scripted client without loading a
+    model or hand-copying its permissions.
     """
     kwargs = {param: entry[param] for param in AGENT_PARAMS if param in entry}
     kwargs.update({param: entry[param] for param in MEMORY_PARAMS if param in entry})
@@ -128,7 +136,7 @@ def build_agent_kwargs(
         # something, so a tool-free config never builds the built-in tools.
         kwargs["tool_registry"] = tool_registry or default_registry()
 
-    kwargs["llm_client"] = build_llm_client(entry)
+    kwargs["llm_client"] = llm_client if llm_client is not None else build_llm_client(entry)
     return kwargs
 
 
